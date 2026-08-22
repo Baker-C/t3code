@@ -189,7 +189,9 @@ function ToastDescriptionAndExpandable({
   const labels = toastData?.expandableLabels ?? {};
   const descriptionTrigger = toastData?.expandableDescriptionTrigger ?? false;
   const descriptionClassName = cn(
-    "min-w-0 select-text wrap-break-word text-muted-foreground",
+    // `whitespace-pre-line` keeps diagnostics that errors append on their own
+    // line instead of collapsing them into the summary.
+    "min-w-0 select-text wrap-break-word whitespace-pre-line text-muted-foreground",
     errorDescriptionClampClass(toastType, toastDescription),
   );
   const [open, setOpen] = useState(false);

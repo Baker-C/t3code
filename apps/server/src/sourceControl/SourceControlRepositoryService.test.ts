@@ -7,7 +7,11 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { GitCommandError, SourceControlProviderError } from "@t3tools/contracts";
+import {
+  GitCommandError,
+  SourceControlProviderError,
+  VcsProcessExitError,
+} from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -147,6 +151,75 @@ it.effect("preserves provider failures without deriving the repository message f
       "Source control repository operation lookupRepository failed for github: The source control operation could not be completed.",
     );
     assert.strictEqual(error.cause, providerCause);
+  }).pipe(Effect.provide(makeLayer({ provider })));
+});
+
+function providerFailureWithStderr(stderr: string) {
+  return new SourceControlProviderError({
+    provider: "github",
+    operation: "getRepositoryCloneUrls",
+    cwd: "/workspace",
+    repository: "octocat/t3code",
+    detail: "GitHub CLI command failed.",
+    cause: VcsProcessExitError.fromProcessExit(
+      { operation: "GitHubCli.execute", command: "gh", cwd: "/workspace" },
+      { exitCode: 1, stderr, stderrTruncated: false },
+      "command-failed",
+    ),
+  });
+}
+
+it.effect("surfaces the underlying tool stderr as a diagnostic beneath the summary", () => {
+  const provider = makeProvider({
+    getRepositoryCloneUrls: () =>
+      Effect.fail(
+        providerFailureWithStderr(
+          "GraphQL: Could not resolve to a Repository with the name 'octocat/nope'.\n",
+        ),
+      ),
+  });
+
+  return Effect.gen(function* () {
+    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+    const error = yield* Effect.flip(
+      service.lookupRepository({
+        provider: "github",
+        repository: "octocat/nope",
+        cwd: "/workspace",
+      }),
+    );
+
+    assert.strictEqual(error.detail, "The source control operation could not be completed.");
+    assert.strictEqual(
+      error.diagnostic,
+      "GraphQL: Could not resolve to a Repository with the name 'octocat/nope'.",
+    );
+    assert.strictEqual(
+      error.message,
+      "Source control repository operation lookupRepository failed for github: The source control operation could not be completed.\n\nGraphQL: Could not resolve to a Repository with the name 'octocat/nope'.",
+    );
+  }).pipe(Effect.provide(makeLayer({ provider })));
+});
+
+it.effect("redacts credentials embedded in the surfaced stderr", () => {
+  const provider = makeProvider({
+    getRepositoryCloneUrls: () =>
+      Effect.fail(
+        providerFailureWithStderr("fatal: could not read https://user:ghp_secret@github.com/o/r"),
+      ),
+  });
+
+  return Effect.gen(function* () {
+    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+    const error = yield* Effect.flip(
+      service.lookupRepository({
+        provider: "github",
+        repository: "octocat/t3code",
+        cwd: "/workspace",
+      }),
+    );
+
+    assert.strictEqual(error.diagnostic, "fatal: could not read https://github.com/o/r");
   }).pipe(Effect.provide(makeLayer({ provider })));
 });
 
