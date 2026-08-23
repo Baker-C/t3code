@@ -271,7 +271,7 @@ const makeHarness = (dirtyPaths: Set<string>) =>
     };
   });
 
-type Harness = Effect.Effect.Success<ReturnType<typeof makeHarness>>;
+type Harness = Effect.Success<ReturnType<typeof makeHarness>>;
 
 /**
  * Builds a fresh layer per test so each one gets its own in-memory database,
