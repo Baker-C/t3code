@@ -1,0 +1,256 @@
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { battleScopeProgress } from "@t3tools/client-runtime/state/battles";
+import type { BattleId, EnvironmentId } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
+import { ChevronDownIcon, ChevronUpIcon, GitBranchIcon, SwordsIcon } from "lucide-react";
+import { memo, useMemo, useState, type ReactNode } from "react";
+
+import { isElectron } from "../../env";
+import { useBattle, type EnvironmentBattle } from "../../state/battles";
+import { useProject, useThreadShellsForProjectRefs } from "../../state/entities";
+import { useEnvironmentQuery } from "../../state/query";
+import { environmentShell } from "../../state/shell";
+import { cn } from "~/lib/utils";
+import { layoutBattleMembers } from "../battles.logic";
+import {
+  CONDITION_GLYPH,
+  CONDITION_GLYPH_CLASS,
+  CONDITION_STATE_LABEL,
+  formatSizeScore,
+} from "../chat/BattleConditionsBadge";
+import { resolveThreadStatusPill } from "../Sidebar.logic";
+import { ScrollArea } from "../ui/scroll-area";
+import { SidebarInset } from "../ui/sidebar";
+import {
+  WorkspaceBreadcrumb,
+  WorkspaceBreadcrumbItem,
+  WorkspaceBreadcrumbSeparator,
+} from "../WorkspaceBreadcrumb";
+import { WorkspacePageContainer } from "../WorkspacePageContainer";
+import { WorkspacePageHeader } from "../WorkspacePageHeader";
+
+function SectionLabel(props: { readonly children: ReactNode }) {
+  return (
+    <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+      {props.children}
+    </h2>
+  );
+}
+
+/** One enlisted thread; opening it is plain navigation, same as the sidebar. */
+const BattleThreadRow = memo(function BattleThreadRow(props: {
+  thread: EnvironmentThreadShell;
+}) {
+  const { thread } = props;
+  const navigate = useNavigate();
+  const pill = resolveThreadStatusPill({ thread });
+  return (
+    <li className="list-none">
+      <button
+        type="button"
+        onClick={() =>
+          void navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId: thread.environmentId, threadId: thread.id },
+          })
+        }
+        className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-card px-2.5 text-left text-xs outline-none hover:border-border hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
+          {thread.title}
+        </span>
+        {thread.archivedAt !== null ? (
+          <span className="shrink-0 text-[11px] text-muted-foreground/70">Archived</span>
+        ) : pill !== null ? (
+          <span className={cn("flex shrink-0 items-center gap-1.5 text-[11px]", pill.colorClass)}>
+            <span className={cn("size-1.5 rounded-full", pill.dotClass)} />
+            {pill.label}
+          </span>
+        ) : null}
+      </button>
+    </li>
+  );
+});
+
+function BattleView(props: {
+  readonly battle: EnvironmentBattle;
+  readonly threads: readonly EnvironmentThreadShell[];
+}) {
+  const { battle, threads } = props;
+  const progress = battleScopeProgress(battle);
+  const memberItems = useMemo(() => layoutBattleMembers(threads), [threads]);
+  // Collapsing tucks the goal and conditions away for a battle you know well,
+  // leaving just the title over its threads.
+  const [detailsCollapsed, setDetailsCollapsed] = useState(false);
+  return (
+    <WorkspacePageContainer className="items-center">
+      <div className="flex w-full flex-col items-center gap-2 text-center">
+        <h1 className="max-w-full truncate text-xl font-semibold text-foreground">
+          {battle.title}
+        </h1>
+        {!detailsCollapsed && battle.goal !== null ? (
+          <p className="m-0 max-w-prose text-sm whitespace-pre-wrap text-foreground/85">
+            {battle.goal}
+          </p>
+        ) : null}
+      </div>
+
+      {detailsCollapsed ? null : (
+        <section className="flex w-full max-w-xl flex-col items-center gap-2">
+          <SectionLabel>
+            Victory conditions
+            {progress.total > 0 ? (
+              <span className="ms-2 font-normal normal-case tabular-nums">
+                {progress.scoped} of {progress.total} scoped
+              </span>
+            ) : null}
+          </SectionLabel>
+          {battle.victoryConditions.length === 0 ? (
+            <p className="m-0 text-sm text-muted-foreground/70">No victory conditions yet.</p>
+          ) : (
+            <div className="flex w-full flex-col gap-0.5" role="list">
+              {battle.victoryConditions.map((condition) => (
+                <div
+                  key={condition.id}
+                  role="listitem"
+                  className="flex items-baseline gap-2 text-xs leading-5"
+                >
+                  <span
+                    aria-label={CONDITION_STATE_LABEL[condition.state]}
+                    className={cn(
+                      "w-3 shrink-0 text-center font-mono text-[10px]",
+                      CONDITION_GLYPH_CLASS[condition.state],
+                    )}
+                  >
+                    {CONDITION_GLYPH[condition.state]}
+                  </span>
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1",
+                      condition.state === "descoped"
+                        ? "text-muted-foreground/45 line-through"
+                        : condition.state === "scoped"
+                          ? "text-muted-foreground/70"
+                          : "text-foreground/90",
+                    )}
+                  >
+                    {condition.title}
+                  </span>
+                  <span className="w-7 shrink-0 text-right text-[10px] text-sky-600 tabular-nums dark:text-sky-300/80">
+                    {formatSizeScore(condition)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="flex w-full max-w-xl flex-col items-center gap-2">
+        {memberItems.length === 0 ? (
+          <p className="m-0 text-sm text-muted-foreground/70">
+            No threads enlisted yet. Threads join a battle when they are created.
+          </p>
+        ) : (
+          <ul role="list" className="m-0 flex w-full list-none flex-col gap-1 p-0">
+            {memberItems.map((item) =>
+              item.kind === "worktree-label" ? (
+                <li
+                  key={`worktree-${item.worktreePath}`}
+                  className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground first:mt-0"
+                >
+                  <GitBranchIcon aria-hidden className="size-3 shrink-0" />
+                  <span className="min-w-0 truncate">
+                    {item.repoLabel} — {item.branch ?? "detached"}
+                  </span>
+                </li>
+              ) : (
+                <BattleThreadRow key={item.thread.id} thread={item.thread} />
+              ),
+            )}
+          </ul>
+        )}
+      </section>
+
+      <button
+        type="button"
+        aria-expanded={!detailsCollapsed}
+        aria-label={
+          detailsCollapsed ? "Show goal and victory conditions" : "Hide goal and victory conditions"
+        }
+        onClick={() => setDetailsCollapsed((collapsed) => !collapsed)}
+        className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {detailsCollapsed ? (
+          <ChevronDownIcon aria-hidden className="size-3.5" />
+        ) : (
+          <ChevronUpIcon aria-hidden className="size-3.5" />
+        )}
+      </button>
+    </WorkspacePageContainer>
+  );
+}
+
+/**
+ * The battle's own page in the main window: title, goal, victory conditions,
+ * and the enlisted threads. Everything renders from the live shell snapshot,
+ * so the page tracks battle and thread changes without any fetch of its own.
+ */
+export function BattlePage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly battleId: BattleId;
+}) {
+  const { battleId, environmentId } = props;
+  const battle = useBattle(environmentId, battleId);
+  const liveBattle = battle !== null && battle.deletedAt === null ? battle : null;
+  const shell = useEnvironmentQuery(environmentShell.stateAtom(environmentId));
+  const bootstrapComplete = shell.data?.snapshot._tag === "Some";
+  const project = useProject(
+    liveBattle === null ? null : scopeProjectRef(environmentId, liveBattle.projectId),
+  );
+  const projectRefs = useMemo(
+    () =>
+      liveBattle === null ? [] : [scopeProjectRef(environmentId, liveBattle.projectId)],
+    [environmentId, liveBattle],
+  );
+  const projectThreads = useThreadShellsForProjectRefs(projectRefs);
+  const memberThreads = useMemo(
+    () => projectThreads.filter((thread) => thread.battleId === battleId),
+    [battleId, projectThreads],
+  );
+  return (
+    <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+        <WorkspacePageHeader electron={isElectron}>
+          <WorkspaceBreadcrumb ariaLabel="Battle breadcrumb" className="min-w-0">
+            {project !== null ? (
+              <>
+                <WorkspaceBreadcrumbItem>
+                  <span className="truncate">{project.title}</span>
+                </WorkspaceBreadcrumbItem>
+                <WorkspaceBreadcrumbSeparator />
+              </>
+            ) : null}
+            <WorkspaceBreadcrumbItem current>
+              <SwordsIcon aria-hidden className="me-1.5 size-3.5 shrink-0" />
+              <h1 className="truncate">{liveBattle?.title ?? "Battle"}</h1>
+            </WorkspaceBreadcrumbItem>
+          </WorkspaceBreadcrumb>
+        </WorkspacePageHeader>
+        <ScrollArea className="min-h-0 flex-1">
+          {liveBattle !== null ? (
+            <BattleView battle={liveBattle} threads={memberThreads} />
+          ) : bootstrapComplete ? (
+            <WorkspacePageContainer className="items-center pt-24 text-center">
+              <SwordsIcon aria-hidden className="size-6 text-muted-foreground/50" />
+              <p className="m-0 text-sm text-muted-foreground">
+                This battle no longer exists, or its environment is not connected.
+              </p>
+            </WorkspacePageContainer>
+          ) : null}
+        </ScrollArea>
+      </div>
+    </SidebarInset>
+  );
+}

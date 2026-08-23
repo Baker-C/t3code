@@ -29,28 +29,28 @@ import { Input } from "../ui/input";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { toastManager } from "../ui/toast";
 
-const PHASE_LABEL: Record<ResolvedBattlePhase, string> = {
+export const PHASE_LABEL: Record<ResolvedBattlePhase, string> = {
   scoping: "Drawing battle lines",
   linesDrawn: "Battle lines drawn",
   fighting: "Fighting",
   defeated: "Defeated",
 };
 
-const CONDITION_GLYPH: Record<VictoryConditionState, string> = {
+export const CONDITION_GLYPH: Record<VictoryConditionState, string> = {
   scoped: "✓",
   scoping: "●",
   unscoped: "○",
   descoped: "✕",
 };
 
-const CONDITION_GLYPH_CLASS: Record<VictoryConditionState, string> = {
+export const CONDITION_GLYPH_CLASS: Record<VictoryConditionState, string> = {
   scoped: "text-success",
   scoping: "text-primary",
   unscoped: "text-muted-foreground/40",
   descoped: "text-muted-foreground/40",
 };
 
-const CONDITION_STATE_LABEL: Record<VictoryConditionState, string> = {
+export const CONDITION_STATE_LABEL: Record<VictoryConditionState, string> = {
   scoped: "Scoped",
   scoping: "Scoping",
   unscoped: "Unscoped",
@@ -59,7 +59,7 @@ const CONDITION_STATE_LABEL: Record<VictoryConditionState, string> = {
 
 /** Size lands as a plain number; a provisional estimate wears a tilde so a
     guess never reads as a settled score. */
-function formatSizeScore(condition: VictoryCondition): string | null {
+export function formatSizeScore(condition: VictoryCondition): string | null {
   if (condition.sizeScore === null) return null;
   return condition.sizeProvisional ? `~${condition.sizeScore}` : `${condition.sizeScore}`;
 }

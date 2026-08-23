@@ -55,6 +55,14 @@ A battle is scoping, fighting, or defeated, and the label beside its name tells 
 and a battle can only start fighting once it reads that way. A battle with nothing but struck
 conditions never qualifies, because nothing survived to fight for.
 
+## The battle page
+
+Click a battle in the sidebar to open its page in the main window. The page shows the battle's
+title and phase, its goal, its victory conditions with their states and scope progress, and every
+thread enlisted in the battle — click a thread to jump to it. When a battle spans several
+worktrees, its threads group under a label per worktree, the same way the sidebar shows them. The
+page follows along live as conditions change and threads come and go.
+
 ## Threads in a battle
 
 A thread joins a battle when it is created, and stays in it. There is no moving a thread between
@@ -62,8 +70,8 @@ battles afterwards — mid-conversation reassignment is the part of this model t
 T3 Code does not offer it.
 
 In the sidebar, a battle's threads group under the battle's name inside their project, with the
-scope progress beside it. Collapse a battle to tuck its threads away; a collapsed battle still
-shows a status dot while any of its threads is working or waiting on you.
+scope progress beside it. The chevron beside a battle collapses its threads to tuck them away; a
+collapsed battle still shows a status dot while any of its threads is working or waiting on you.
 
 A battle owns no branch and no worktree of its own. Its threads keep their own, which is what lets
 one battle span several repositories — a frontend checkout and a backend checkout can both be part
