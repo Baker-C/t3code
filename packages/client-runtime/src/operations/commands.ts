@@ -31,6 +31,15 @@ type CommandInput<T extends CommandType> = Omit<
 export type CreateProjectInput = CommandInput<"project.create">;
 export type UpdateProjectInput = CommandInput<"project.meta.update">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
+export type CreateBattleInput = CommandInput<"battle.create">;
+export type UpdateBattleMetadataInput = CommandInput<"battle.meta.update">;
+export type AddBattleConditionInput = CommandInput<"battle.condition.add">;
+export type UpdateBattleConditionInput = CommandInput<"battle.condition.update">;
+export type StrikeBattleConditionInput = CommandInput<"battle.condition.strike">;
+export type DeclareBattleFightingInput = CommandInput<"battle.declare-fighting">;
+export type DeclareBattleDefeatInput = CommandInput<"battle.declare-defeat">;
+export type ReopenBattleInput = CommandInput<"battle.reopen">;
+export type DeleteBattleInput = CommandInput<"battle.delete">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -114,6 +123,95 @@ export const deleteProject: (input: DeleteProjectInput) => CommandEffect = Effec
   return yield* dispatch({
     ...input,
     type: "project.delete",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const createBattle: (input: CreateBattleInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.createBattle",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "battle.create",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const updateBattleMetadata: (input: UpdateBattleMetadataInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.updateBattleMetadata",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.meta.update",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const addBattleCondition: (input: AddBattleConditionInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.addBattleCondition",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.condition.add",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const updateBattleCondition: (input: UpdateBattleConditionInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.updateBattleCondition")(function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "battle.condition.update",
+      commandId: yield* commandId(input),
+    });
+  });
+
+export const strikeBattleCondition: (input: StrikeBattleConditionInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.strikeBattleCondition")(function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "battle.condition.strike",
+      commandId: yield* commandId(input),
+    });
+  });
+
+export const declareBattleFighting: (input: DeclareBattleFightingInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.declareBattleFighting")(function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "battle.declare-fighting",
+      commandId: yield* commandId(input),
+    });
+  });
+
+export const declareBattleDefeat: (input: DeclareBattleDefeatInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.declareBattleDefeat",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.declare-defeat",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const reopenBattle: (input: ReopenBattleInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.reopenBattle",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.reopen",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const deleteBattle: (input: DeleteBattleInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.deleteBattle",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.delete",
     commandId: yield* commandId(input),
   });
 });

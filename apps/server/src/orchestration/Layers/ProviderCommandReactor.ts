@@ -1,9 +1,11 @@
 import {
+  type BattleId,
   type ChatAttachment,
   CommandId,
   EventId,
   type ModelSelection,
   type OrchestrationEvent,
+  type OrchestrationThread,
   ProviderDriverKind,
   type ProjectId,
   type OrchestrationSession,
@@ -26,6 +28,7 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { makeTurnGate, normalizeTurnGateKey } from "../../provider/TurnGate.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
@@ -376,6 +379,33 @@ const make = Effect.gen(function* () {
     }
     return Cause.pretty(cause);
   };
+
+  const turnGate = yield* makeTurnGate;
+
+  const setThreadTurnQueued = (input: {
+    readonly threadId: ThreadId;
+    readonly turnQueued: boolean;
+    readonly createdAt: string;
+  }) =>
+    serverCommandId("turn-queue-update").pipe(
+      Effect.flatMap((commandId) =>
+        orchestrationEngine.dispatch({
+          type: "thread.turn-queue.update",
+          commandId,
+          threadId: input.threadId,
+          turnQueued: input.turnQueued,
+          createdAt: input.createdAt,
+        }),
+      ),
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor failed to update turn queue state", {
+          threadId: input.threadId,
+          turnQueued: input.turnQueued,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
@@ -785,12 +815,19 @@ const make = Effect.gen(function* () {
     "maybeGenerateAndRenameWorktreeBranchForFirstTurn",
   )(function* (input: {
     readonly threadId: ThreadId;
+    readonly battleId: BattleId | null;
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
   }) {
     if (!input.branch || !input.worktreePath) {
+      return;
+    }
+    // Battle threads carry battle-derived branch names from creation and may
+    // share the worktree with siblings, where a rename would race; never
+    // auto-rename them even if the branch somehow looks temporary.
+    if (input.battleId !== null) {
       return;
     }
     if (!isTemporaryWorktreeBranch(input.branch)) {
@@ -1057,6 +1094,70 @@ const make = Effect.gen(function* () {
     processThreadTitleRegenerationSafely,
   );
 
+  // Retirement clears a battle member's worktreePath but keeps its branch, so
+  // a battle reopened afterwards restores the worktree on the member's next
+  // turn rather than eagerly at reopen. Members that shared a branch converge
+  // on one worktree again because an existing worktree for the branch is
+  // reused instead of created. Returns undefined when the turn cannot proceed.
+  const ensureBattleWorktreeProvisioned = Effect.fn("ensureBattleWorktreeProvisioned")(
+    function* (input: { readonly thread: OrchestrationThread; readonly createdAt: string }) {
+      const { thread } = input;
+      if (!thread.battleId || thread.branch === null || thread.worktreePath !== null) {
+        return thread;
+      }
+
+      const failTurn = (detail: string) =>
+        appendProviderFailureActivity({
+          threadId: thread.id,
+          kind: "provider.turn.start.failed",
+          summary: "Provider turn start failed",
+          detail,
+          turnId: null,
+          createdAt: input.createdAt,
+        }).pipe(Effect.as(undefined));
+
+      const project = yield* resolveProject(thread.projectId);
+      if (!project) {
+        return thread;
+      }
+
+      const refs = yield* gitWorkflow
+        .listRefs({ cwd: project.workspaceRoot, refKind: "local", query: thread.branch })
+        .pipe(
+          Effect.map((result) => result.refs),
+          Effect.catch(() => Effect.succeed(null)),
+        );
+      const branchRef = refs?.find((ref) => ref.isRemote !== true && ref.name === thread.branch);
+      if (!branchRef) {
+        return yield* failTurn(
+          `Branch '${thread.branch}' no longer exists in ${project.workspaceRoot}, so its worktree could not be restored. Move this thread to another branch to continue.`,
+        );
+      }
+
+      const worktreePath =
+        branchRef.worktreePath ??
+        (yield* gitWorkflow
+          .createWorktree({ cwd: project.workspaceRoot, refName: thread.branch, path: null })
+          .pipe(
+            Effect.map((created) => created.worktree.path),
+            Effect.catch(() => Effect.succeed(null)),
+          ));
+      if (!worktreePath) {
+        return yield* failTurn(
+          `Could not restore a worktree for branch '${thread.branch}' in ${project.workspaceRoot}.`,
+        );
+      }
+
+      yield* orchestrationEngine.dispatch({
+        type: "thread.meta.update",
+        commandId: yield* serverCommandId("battle-worktree-reprovision"),
+        threadId: thread.id,
+        worktreePath,
+      });
+      return { ...thread, worktreePath };
+    },
+  );
+
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
@@ -1065,7 +1166,15 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const thread = yield* resolveThread(event.payload.threadId);
+    const resolvedThread = yield* resolveThread(event.payload.threadId);
+    if (!resolvedThread) {
+      return;
+    }
+
+    const thread = yield* ensureBattleWorktreeProvisioned({
+      thread: resolvedThread,
+      createdAt: event.payload.createdAt,
+    });
     if (!thread) {
       return;
     }
@@ -1100,6 +1209,7 @@ const make = Effect.gen(function* () {
 
       yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
         threadId: event.payload.threadId,
+        battleId: thread.battleId ?? null,
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         ...generationInput,
@@ -1168,8 +1278,33 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
+    // Turns serialize per resolved cwd: threads sharing a worktree (or a
+    // project root in local mode) take one permit each, held for the whole
+    // forked turn so release rides fiber exit — completion, failure, or
+    // interruption alike.
+    const gateProject = yield* resolveProject(thread.projectId);
+    const workspaceCwd = resolveThreadWorkspaceCwd({
+      thread,
+      projects: gateProject ? [gateProject] : [],
+    });
+    const turnGateKey = workspaceCwd
+      ? normalizeTurnGateKey(workspaceCwd)
+      : `thread:${event.payload.threadId}`;
+
+    yield* turnGate
+      .withTurnPermit({
+        key: turnGateKey,
+        onQueued: setThreadTurnQueued({
+          threadId: event.payload.threadId,
+          turnQueued: true,
+          createdAt: event.payload.createdAt,
+        }),
+        onAcquired: setThreadTurnQueued({
+          threadId: event.payload.threadId,
+          turnQueued: false,
+          createdAt: event.payload.createdAt,
+        }),
+      })(providerService.sendTurn(sendTurnRequest.value))
       .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
   });
 
@@ -1422,11 +1557,42 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+    // The turn gate is in-memory, so a restart empties it while projected
+    // turnQueued flags survive; sweep them so no thread shows a stale
+    // "queued" state with nothing to wait for.
+    const clearStaleTurnQueuedFlags = projectionSnapshotQuery.getShellSnapshot().pipe(
+      Effect.flatMap((snapshot) =>
+        Effect.forEach(
+          snapshot.threads.filter((entry) => entry.turnQueued === true),
+          (entry) =>
+            setThreadTurnQueued({
+              threadId: entry.id,
+              turnQueued: false,
+              createdAt: snapshot.updatedAt,
+            }),
+          { discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.interrupt;
+        }
+        return Effect.logWarning(
+          "provider command reactor failed to clear stale turn queue flags",
+          {
+            cause: Cause.pretty(cause),
+          },
+        );
+      }),
+    );
+
     const activation = yield* ServerActivation;
     if (activation === undefined) {
       yield* clearInterrupted;
+      yield* clearStaleTurnQueuedFlags;
     } else {
       yield* forkParked(clearInterrupted);
+      yield* forkParked(clearStaleTurnQueuedFlags);
     }
   });
 

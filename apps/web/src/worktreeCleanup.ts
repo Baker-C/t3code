@@ -8,12 +8,24 @@ function normalizeWorktreePath(path: string | null): string | null {
   return trimmed;
 }
 
+/**
+ * The worktree this thread would leave behind, or null when it must stay.
+ *
+ * A battle thread never offers its worktree for deletion: sibling threads
+ * join a battle's worktrees over the battle's life, and the ones this list
+ * cannot see (archived, settled elsewhere) would be stranded by a delete the
+ * caller believed was safe. Battle worktrees retire with the battle instead,
+ * through declare-defeat.
+ */
 export function getOrphanedWorktreePathForThread(
-  threads: ReadonlyArray<Pick<ThreadShell, "id" | "worktreePath">>,
+  threads: ReadonlyArray<Pick<ThreadShell, "id" | "worktreePath" | "battleId">>,
   threadId: ThreadShell["id"],
 ): string | null {
   const targetThread = threads.find((thread) => thread.id === threadId);
   if (!targetThread) {
+    return null;
+  }
+  if (targetThread.battleId != null) {
     return null;
   }
 

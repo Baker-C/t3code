@@ -2,7 +2,15 @@ import {
   ProjectCreatedPayload as ContractsProjectCreatedPayloadSchema,
   ProjectMetaUpdatedPayload as ContractsProjectMetaUpdatedPayloadSchema,
   ProjectDeletedPayload as ContractsProjectDeletedPayloadSchema,
+  BattleCreatedPayload as ContractsBattleCreatedPayloadSchema,
+  BattleMetaUpdatedPayload as ContractsBattleMetaUpdatedPayloadSchema,
+  BattleConditionAddedPayload as ContractsBattleConditionAddedPayloadSchema,
+  BattleConditionUpdatedPayload as ContractsBattleConditionUpdatedPayloadSchema,
+  BattleConditionStruckPayload as ContractsBattleConditionStruckPayloadSchema,
+  BattlePhaseChangedPayload as ContractsBattlePhaseChangedPayloadSchema,
+  BattleDeletedPayload as ContractsBattleDeletedPayloadSchema,
   ThreadCreatedPayload as ContractsThreadCreatedPayloadSchema,
+  ThreadTurnQueueUpdatedPayload as ContractsThreadTurnQueueUpdatedPayloadSchema,
   ThreadArchivedPayload as ContractsThreadArchivedPayloadSchema,
   ThreadSettledPayload as ContractsThreadSettledPayloadSchema,
   ThreadMetaUpdatedPayload as ContractsThreadMetaUpdatedPayloadSchema,
@@ -34,7 +42,16 @@ export const ProjectCreatedPayload = ContractsProjectCreatedPayloadSchema;
 export const ProjectMetaUpdatedPayload = ContractsProjectMetaUpdatedPayloadSchema;
 export const ProjectDeletedPayload = ContractsProjectDeletedPayloadSchema;
 
+export const BattleCreatedPayload = ContractsBattleCreatedPayloadSchema;
+export const BattleMetaUpdatedPayload = ContractsBattleMetaUpdatedPayloadSchema;
+export const BattleConditionAddedPayload = ContractsBattleConditionAddedPayloadSchema;
+export const BattleConditionUpdatedPayload = ContractsBattleConditionUpdatedPayloadSchema;
+export const BattleConditionStruckPayload = ContractsBattleConditionStruckPayloadSchema;
+export const BattlePhaseChangedPayload = ContractsBattlePhaseChangedPayloadSchema;
+export const BattleDeletedPayload = ContractsBattleDeletedPayloadSchema;
+
 export const ThreadCreatedPayload = ContractsThreadCreatedPayloadSchema;
+export const ThreadTurnQueueUpdatedPayload = ContractsThreadTurnQueueUpdatedPayloadSchema;
 export const ThreadArchivedPayload = ContractsThreadArchivedPayloadSchema;
 export const ThreadSettledPayload = ContractsThreadSettledPayloadSchema;
 export const ThreadMetaUpdatedPayload = ContractsThreadMetaUpdatedPayloadSchema;

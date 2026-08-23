@@ -56,6 +56,7 @@ function TaskSegments({
 
 export const ComposerTasksBadge = memo(function ComposerTasksBadge({
   expanded,
+  hasLeadingShoulder = false,
   hasTrailingShoulder = false,
   onDismiss,
   onToggle,
@@ -64,6 +65,8 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
   steps,
 }: {
   readonly expanded: boolean;
+  /** A battle tab occupies the left shoulder, so the tasks tab starts after it. */
+  readonly hasLeadingShoulder?: boolean;
   readonly hasTrailingShoulder?: boolean;
   readonly onDismiss: () => void;
   readonly onToggle: () => void;
@@ -116,7 +119,8 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
   return (
     <div
       className={cn(
-        "chat-composer-shoulder-tab chat-composer-tasks-tab absolute -top-7 left-4 z-0 flex h-8 items-center gap-1 rounded-t-xl border border-b-0 px-2 pb-1 text-xs leading-none text-muted-foreground",
+        "chat-composer-shoulder-tab chat-composer-tasks-tab absolute -top-7 z-0 flex h-8 items-center gap-1 rounded-t-xl border border-b-0 px-2 pb-1 text-xs leading-none text-muted-foreground",
+        hasLeadingShoulder ? "left-58" : "left-4",
         hasTrailingShoulder ? "right-28" : "right-4",
         allDone && "text-foreground",
       )}

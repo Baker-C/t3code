@@ -122,6 +122,7 @@ export interface ThreadStatusPill {
     | "Working"
     | "Monitoring"
     | "Connecting"
+    | "Queued"
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
@@ -132,13 +133,15 @@ export interface ThreadStatusPill {
 }
 
 // Rollup order mirrors the per-thread resolver exactly: attention states,
-// then active work, then the actionable plan prompt, then passive
-// monitoring. A Monitoring sibling must never hide a Plan Ready thread.
+// then active work, then the queued turn, then the actionable plan prompt,
+// then passive monitoring. A Monitoring sibling must never hide a Plan Ready
+// thread.
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 6,
-  "Awaiting Input": 5,
-  Working: 4,
-  Connecting: 4,
+  "Pending Approval": 7,
+  "Awaiting Input": 6,
+  Working: 5,
+  Connecting: 5,
+  Queued: 4,
   "Plan Ready": 3,
   Monitoring: 2,
   Completed: 1,
@@ -153,6 +156,7 @@ type ThreadStatusInput = Pick<
   | "latestTurn"
   | "session"
   | "backgroundLiveness"
+  | "turnQueued"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -463,13 +467,14 @@ export type SidebarThreadStatus =
   | "approval"
   | "input"
   | "working"
+  | "queued"
   | "monitoring"
   | "failed"
   | "ready";
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundLiveness"
+  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundLiveness" | "turnQueued"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -486,6 +491,11 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   // see the failure, not a stale Working (review finding).
   if (thread.session?.status === "error") {
     return "failed";
+  }
+  // Waiting for a mate to release the shared worktree — the turn is real, so
+  // it outranks a settled thread's background work.
+  if (thread.turnQueued === true) {
+    return "queued";
   }
   // Background work outlives the turn: fleets read as working; monitoring
   // only when watch loops are the sole live work.
@@ -676,6 +686,17 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // Queued is waiting, not working: a mate holds this thread's worktree, so
+  // the row stays neutral and still — nothing is happening here yet.
+  if (thread.turnQueued === true) {
+    return {
+      label: "Queued",
+      colorClass: "text-muted-foreground",
+      dotClass: "bg-muted-foreground/60",
+      pulse: false,
+    };
+  }
+
   // An actionable plan prompt outranks lingering background work: it needs
   // the user's decision, while liveness merely reports (review finding).
   const hasPlanReadyPrompt =
@@ -724,6 +745,37 @@ export function resolveThreadStatusPill(input: {
   }
 
   return null;
+}
+
+/**
+ * Splits an already-sorted thread list into per-project buckets keyed by
+ * logical project key (sections inherit the input order, so a sorted input
+ * yields sorted sections). Threads whose project belongs to no group — a
+ * projection race — come back in `unassigned` so they can still render
+ * instead of silently disappearing.
+ */
+export function partitionThreadsByProjectSection<
+  T extends { readonly environmentId: string; readonly projectId: string },
+>(
+  threads: readonly T[],
+  sectionKeyByMemberKey: ReadonlyMap<string, string>,
+): { sections: Map<string, T[]>; unassigned: T[] } {
+  const sections = new Map<string, T[]>();
+  const unassigned: T[] = [];
+  for (const thread of threads) {
+    const sectionKey = sectionKeyByMemberKey.get(`${thread.environmentId}:${thread.projectId}`);
+    if (sectionKey === undefined) {
+      unassigned.push(thread);
+      continue;
+    }
+    const existing = sections.get(sectionKey);
+    if (existing) {
+      existing.push(thread);
+    } else {
+      sections.set(sectionKey, [thread]);
+    }
+  }
+  return { sections, unassigned };
 }
 
 export function resolveProjectStatusIndicator(

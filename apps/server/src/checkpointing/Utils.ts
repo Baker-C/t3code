@@ -9,6 +9,18 @@ export function checkpointRefForThreadTurn(threadId: ThreadId, turnCount: number
   );
 }
 
+/**
+ * The state a shared worktree was in when this thread's turn `turnCount`
+ * began. Only threads sharing a cwd capture it; `turn/<n-1>` is not a usable
+ * starting point for them because a sibling's turns land in between.
+ */
+export function preCheckpointRefForThreadTurn(
+  threadId: ThreadId,
+  turnCount: number,
+): CheckpointRef {
+  return CheckpointRef.make(`${checkpointRefForThreadTurn(threadId, turnCount)}-pre`);
+}
+
 export function resolveThreadWorkspaceCwd(input: {
   readonly thread: {
     readonly projectId: ProjectId;

@@ -18,6 +18,14 @@ import {
 } from "./ui/select";
 
 export const PREVIOUS_WORKTREE_SELECT_VALUE = "previous-worktree";
+const JOIN_WORKTREE_VALUE_PREFIX = "join-worktree:";
+const NEW_WORKTREE_ROOT_VALUE_PREFIX = "new-worktree-root:";
+
+export interface BattleDestinationOption {
+  /** Worktree path to join, or repo root to cut a new worktree from. */
+  readonly value: string;
+  readonly label: string;
+}
 
 interface BranchToolbarEnvModeSelectorProps {
   envLocked: boolean;
@@ -26,6 +34,13 @@ interface BranchToolbarEnvModeSelectorProps {
   onEnvModeChange: (mode: EnvMode) => void;
   previousWorktreeLabel?: string | null;
   onUsePreviousWorktree?: () => void;
+  /** Sibling worktrees of the draft's battle, joinable as-is. */
+  joinWorktrees?: readonly BattleDestinationOption[];
+  onJoinWorktree?: (worktreePath: string) => void;
+  /** Repo roots to cut a new worktree from; only offered for multi-repo
+      project folders, where "which repo" has no obvious answer. */
+  newWorktreeRoots?: readonly BattleDestinationOption[];
+  onSelectNewWorktreeRoot?: (repoRoot: string) => void;
 }
 
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
@@ -35,8 +50,14 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
   onEnvModeChange,
   previousWorktreeLabel,
   onUsePreviousWorktree,
+  joinWorktrees,
+  onJoinWorktree,
+  newWorktreeRoots,
+  onSelectNewWorktreeRoot,
 }: BranchToolbarEnvModeSelectorProps) {
   const showPreviousWorktree = Boolean(previousWorktreeLabel && onUsePreviousWorktree);
+  const joinOptions = onJoinWorktree ? (joinWorktrees ?? []) : [];
+  const newWorktreeRootOptions = onSelectNewWorktreeRoot ? (newWorktreeRoots ?? []) : [];
   const envModeItems = useMemo(
     () => [
       { value: "local", label: resolveCurrentWorkspaceLabel(activeWorktreePath) },
@@ -44,8 +65,22 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       ...(showPreviousWorktree && previousWorktreeLabel
         ? [{ value: PREVIOUS_WORKTREE_SELECT_VALUE, label: previousWorktreeLabel }]
         : []),
+      ...joinOptions.map((option) => ({
+        value: `${JOIN_WORKTREE_VALUE_PREFIX}${option.value}`,
+        label: option.label,
+      })),
+      ...newWorktreeRootOptions.map((option) => ({
+        value: `${NEW_WORKTREE_ROOT_VALUE_PREFIX}${option.value}`,
+        label: option.label,
+      })),
     ],
-    [activeWorktreePath, previousWorktreeLabel, showPreviousWorktree],
+    [
+      activeWorktreePath,
+      joinOptions,
+      newWorktreeRootOptions,
+      previousWorktreeLabel,
+      showPreviousWorktree,
+    ],
   );
 
   if (envLocked) {
@@ -76,6 +111,14 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
       onValueChange={(value: string | null) => {
         if (value === PREVIOUS_WORKTREE_SELECT_VALUE) {
           onUsePreviousWorktree?.();
+          return;
+        }
+        if (value?.startsWith(JOIN_WORKTREE_VALUE_PREFIX)) {
+          onJoinWorktree?.(value.slice(JOIN_WORKTREE_VALUE_PREFIX.length));
+          return;
+        }
+        if (value?.startsWith(NEW_WORKTREE_ROOT_VALUE_PREFIX)) {
+          onSelectNewWorktreeRoot?.(value.slice(NEW_WORKTREE_ROOT_VALUE_PREFIX.length));
           return;
         }
         onEnvModeChange(value as EnvMode);
@@ -136,6 +179,35 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
             </SelectItem>
           ) : null}
         </SelectGroup>
+        {joinOptions.length > 0 ? (
+          <SelectGroup>
+            <SelectGroupLabel>Join a battle worktree</SelectGroupLabel>
+            {joinOptions.map((option) => (
+              <SelectItem key={option.value} value={`${JOIN_WORKTREE_VALUE_PREFIX}${option.value}`}>
+                <span className="inline-flex items-center gap-1.5">
+                  <FolderGit2Icon className="size-3" />
+                  {option.label}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ) : null}
+        {newWorktreeRootOptions.length > 0 ? (
+          <SelectGroup>
+            <SelectGroupLabel>New worktree from</SelectGroupLabel>
+            {newWorktreeRootOptions.map((option) => (
+              <SelectItem
+                key={option.value}
+                value={`${NEW_WORKTREE_ROOT_VALUE_PREFIX}${option.value}`}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <FolderGit2Icon className="size-3" />
+                  {option.label}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ) : null}
       </SelectPopup>
     </Select>
   );

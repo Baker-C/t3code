@@ -24,8 +24,14 @@ import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import {
   checkpointRefForThreadTurn,
+  preCheckpointRefForThreadTurn,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
+import {
+  resolveWorktreeIsShared,
+  resolveWorktreeSiblingThreadIds,
+} from "../../checkpointing/SharedWorktree.ts";
+import { CheckpointRevertBlockedBySharedWorktreeError } from "../../checkpointing/Errors.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
@@ -479,6 +485,43 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // Threads that share a working directory cannot use `turn/<n-1>` as the
+  // state their turn `n` began from: a sibling's completed turns land in the
+  // same directory in between, so a post->post diff would credit this thread
+  // with the sibling's work. Capture a private `-pre` ref instead, overwriting
+  // any earlier one for the same turn — the last capture before the provider
+  // starts is the accurate one, and a queued turn can wait behind a sibling
+  // for a while. Threads that own their worktree get no ref and no change.
+  const capturePreTurnCheckpointForSharedCwd = Effect.fn("capturePreTurnCheckpointForSharedCwd")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+      readonly upcomingTurnCount: number;
+      readonly createdAt: string;
+    }) {
+      const shared = yield* resolveWorktreeIsShared(projectionSnapshotQuery, input.threadId);
+      if (!shared) {
+        return;
+      }
+
+      const preTurnCheckpointRef = preCheckpointRefForThreadTurn(
+        input.threadId,
+        input.upcomingTurnCount,
+      );
+      yield* checkpointStore.captureCheckpoint({
+        cwd: input.cwd,
+        checkpointRef: preTurnCheckpointRef,
+      });
+      yield* receiptBus.publish({
+        type: "checkpoint.baseline.captured",
+        threadId: input.threadId,
+        checkpointTurnCount: input.upcomingTurnCount,
+        checkpointRef: preTurnCheckpointRef,
+        createdAt: input.createdAt,
+      });
+    },
+  );
+
   const ensurePreTurnBaselineFromTurnStart = Effect.fn("ensurePreTurnBaselineFromTurnStart")(
     function* (event: Extract<ProviderRuntimeEvent, { type: "turn.started" }>) {
       const turnId = toTurnId(event.turnId);
@@ -506,6 +549,13 @@ const make = Effect.gen(function* () {
         (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
         0,
       );
+      yield* capturePreTurnCheckpointForSharedCwd({
+        threadId: thread.id,
+        cwd: checkpointCwd,
+        upcomingTurnCount: currentTurnCount + 1,
+        createdAt: event.createdAt,
+      });
+
       const baselineCheckpointRef = checkpointRefForThreadTurn(thread.id, currentTurnCount);
       const baselineExists = yield* checkpointStore.hasCheckpointRef({
         cwd: checkpointCwd,
@@ -590,11 +640,7 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const shell = yield* projectionSnapshotQuery.getShellSnapshot();
-      const worktreeIsShared = shell.threads.some(
-        (other) => other.id !== thread.id && other.worktreePath === thread.worktreePath,
-      );
-      if (worktreeIsShared) {
+      if (yield* resolveWorktreeIsShared(projectionSnapshotQuery, thread.id)) {
         return;
       }
 
@@ -665,6 +711,13 @@ const make = Effect.gen(function* () {
       (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
       0,
     );
+    yield* capturePreTurnCheckpointForSharedCwd({
+      threadId,
+      cwd: checkpointCwd,
+      upcomingTurnCount: currentTurnCount + 1,
+      createdAt: event.occurredAt,
+    });
+
     const baselineCheckpointRef = checkpointRefForThreadTurn(threadId, currentTurnCount);
     const baselineExists = yield* checkpointStore.hasCheckpointRef({
       cwd: checkpointCwd,
@@ -755,6 +808,44 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // Restore is destructive and unscoped: it rewrites the whole directory.
+    // When a thread shares that directory, rolling back past a sibling's
+    // checkpoint would silently destroy work this thread never made. Refuse
+    // before any git mutation runs.
+    const siblingThreadIds = yield* resolveWorktreeSiblingThreadIds(
+      projectionSnapshotQuery,
+      event.payload.threadId,
+    );
+    if (siblingThreadIds.length > 0) {
+      const targetCapturedAt = Date.parse(
+        thread.checkpoints.find(
+          (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
+        )?.completedAt ?? thread.createdAt,
+      );
+      for (const siblingThreadId of siblingThreadIds) {
+        const sibling = yield* resolveThreadDetail(siblingThreadId);
+        if (!sibling) {
+          continue;
+        }
+        const newest = sibling.checkpoints.reduce<(typeof sibling.checkpoints)[number] | null>(
+          (latest, checkpoint) =>
+            latest === null || Date.parse(checkpoint.completedAt) > Date.parse(latest.completedAt)
+              ? checkpoint
+              : latest,
+          null,
+        );
+        if (newest && Date.parse(newest.completedAt) > targetCapturedAt) {
+          return yield* new CheckpointRevertBlockedBySharedWorktreeError({
+            threadId: event.payload.threadId,
+            turnCount: event.payload.turnCount,
+            blockingThreadId: sibling.id,
+            blockingThreadTitle: sibling.title,
+            blockingCheckpointAt: newest.completedAt,
+          });
+        }
+      }
+    }
+
     const restored = yield* checkpointStore.restoreCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: targetCheckpointRef,
@@ -786,6 +877,11 @@ const make = Effect.gen(function* () {
     for (const checkpoint of thread.checkpoints) {
       if (checkpoint.checkpointTurnCount > event.payload.turnCount) {
         staleCheckpointRefs.push(checkpoint.checkpointRef);
+        // Shared-cwd threads also hold a `-pre` ref per turn; deleting refs is
+        // best-effort, so listing them for owned worktrees costs nothing.
+        staleCheckpointRefs.push(
+          preCheckpointRefForThreadTurn(event.payload.threadId, checkpoint.checkpointTurnCount),
+        );
       }
     }
 

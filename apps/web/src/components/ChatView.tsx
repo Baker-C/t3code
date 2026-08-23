@@ -291,6 +291,7 @@ import {
 } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ThreadSyncStatusPill } from "./chat/ThreadSyncStatusPill";
+import { ThreadQueuedNotice } from "./chat/ThreadQueuedNotice";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
   DRAFT_HERO_TRANSITION_DURATION_MS,
@@ -4162,6 +4163,13 @@ function ChatViewContent(props: ChatViewProps) {
     canOverrideServerThreadEnvMode && pendingServerThreadBranch !== undefined
       ? pendingServerThreadBranch
       : (activeThread?.branch ?? null);
+  // The battle this send enlists in: a draft carries its pick until the first
+  // send, a server thread carries the binding it was created with.
+  const draftBattleId =
+    (isLocalDraftThread ? draftThread?.battleId : activeThread?.battleId) ?? null;
+  // Project folders can hold several repos; a battle draft picks which one its
+  // new worktree comes from. Everything else cuts from the project root.
+  const draftRepoRoot = isLocalDraftThread ? (draftThread?.repoRoot ?? null) : null;
   const startFromOrigin = isLocalDraftThread
     ? (draftThread?.startFromOrigin ?? false)
     : canOverrideServerThreadEnvMode
@@ -5372,6 +5380,7 @@ function ChatViewContent(props: ChatViewProps) {
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftBattleId !== null ? { battleId: draftBattleId } : {}),
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -5379,9 +5388,14 @@ function ChatViewContent(props: ChatViewProps) {
               ...(baseBranchForWorktree
                 ? {
                     prepareWorktree: {
-                      projectCwd: activeProject.workspaceRoot,
+                      projectCwd: draftRepoRoot ?? activeProject.workspaceRoot,
                       baseBranch: baseBranchForWorktree,
-                      branch: buildTemporaryWorktreeBranchName(randomHex),
+                      // A battle names its own branches: omitting the branch
+                      // lets the server derive battle/<slug> from the battle's
+                      // immutable slug, so renaming never drifts the branch.
+                      ...(draftBattleId !== null
+                        ? {}
+                        : { branch: buildTemporaryWorktreeBranchName(randomHex) }),
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },
                     runSetupScript: true,
@@ -6321,6 +6335,10 @@ function ChatViewContent(props: ChatViewProps) {
               : { onOpenPullRequest: openThreadPullRequest })}
             activeThreadEnvironmentId={activeThread.environmentId}
             activeThreadId={activeThread.id}
+            activeThreadBattleId={activeThread.battleId ?? null}
+            activeProjectId={activeProject?.id}
+            activeThreadWorktreePath={activeThread.worktreePath}
+            activeThreadBranch={activeThread.branch}
             {...(routeKind === "draft" && draftId ? { draftId } : {})}
             activeThreadTitle={activeThread.title}
             isServerThread={isServerThread}
@@ -6587,6 +6605,14 @@ function ChatViewContent(props: ChatViewProps) {
                           data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                           className="relative z-0"
                         >
+                          {activeThread.turnQueued === true ? (
+                            <ThreadQueuedNotice
+                              environmentId={activeThread.environmentId}
+                              projectId={activeThread.projectId}
+                              threadId={activeThread.id}
+                              worktreePath={activeThread.worktreePath}
+                            />
+                          ) : null}
                           {showComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar

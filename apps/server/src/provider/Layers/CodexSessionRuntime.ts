@@ -38,6 +38,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
@@ -63,6 +64,26 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
+}
+
+/**
+ * Which `t3-code` toolkits this turn's prompt may describe. An attached server
+ * is not enough — the credential decides, and it grants the battle toolkit
+ * only to threads in a battle. A session with no recorded credential falls
+ * back to preview-only, the shape every session had before battles existed.
+ */
+export function mcpToolAvailability(
+  threadId: ThreadId,
+  appServerArgs: ReadonlyArray<string> | undefined,
+): { readonly browserToolsAvailable: boolean; readonly battleToolsAvailable: boolean } {
+  if (!hasConfiguredMcpServer(appServerArgs)) {
+    return { browserToolsAvailable: false, battleToolsAvailable: false };
+  }
+  const capabilities = McpProviderSession.readMcpProviderSession(threadId)?.capabilities;
+  return {
+    browserToolsAvailable: capabilities?.includes("preview") ?? true,
+    battleToolsAvailable: capabilities?.includes("battle") ?? false,
+  };
 }
 
 export const CodexResumeCursorSchema = Schema.Struct({
@@ -341,6 +362,7 @@ function buildCodexCollaborationMode(input: {
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly browserToolsAvailable?: boolean;
+  readonly battleToolsAvailable?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -356,6 +378,7 @@ function buildCodexCollaborationMode(input: {
         input.interactionMode,
         { model, reasoningEffort },
         input.browserToolsAvailable ?? true,
+        input.battleToolsAvailable ?? false,
       ),
     },
   };
@@ -375,6 +398,8 @@ export function buildTurnStartParams(input: {
   readonly interactionMode?: ProviderInteractionMode;
   /** Defaults to true so callers that predate the agent-access gate are unchanged. */
   readonly browserToolsAvailable?: boolean;
+  /** Defaults to false: only battle threads are ever granted these tools. */
+  readonly battleToolsAvailable?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -396,6 +421,7 @@ export function buildTurnStartParams(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     browserToolsAvailable: input.browserToolsAvailable ?? true,
+    battleToolsAvailable: input.battleToolsAvailable ?? false,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({
@@ -1827,10 +1853,11 @@ export const makeCodexSessionRuntime = (
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-            // Derived from the session's own MCP configuration rather than the
-            // setting, so the prompt describes the tools this turn actually
-            // has even if the setting changed after the session started.
-            browserToolsAvailable: hasConfiguredMcpServer(options.appServerArgs),
+            // Derived from the session's own MCP configuration and the
+            // capabilities its credential was minted with, rather than the
+            // settings, so the prompt describes the tools this turn actually
+            // has even if a setting changed after the session started.
+            ...mcpToolAvailability(options.threadId, options.appServerArgs),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(

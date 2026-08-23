@@ -15,6 +15,7 @@ import {
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
+  partitionThreadsByProjectSection,
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
@@ -1130,6 +1131,26 @@ describe("resolveThreadStatusPill", () => {
     ).toBeNull();
   });
 
+  it("shows queued below working and above plan ready, without a pulse", () => {
+    const queuedThread = {
+      ...baseThread,
+      turnQueued: true,
+      hasActionableProposedPlan: true,
+      latestTurn: makeLatestTurn(),
+      session: { ...baseThread.session, status: "ready" as const, activeTurnId: null },
+    };
+
+    expect(resolveThreadStatusPill({ thread: queuedThread })).toMatchObject({
+      label: "Queued",
+      pulse: false,
+    });
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...queuedThread, session: baseThread.session },
+      }),
+    ).toMatchObject({ label: "Working" });
+  });
+
   it("shows completed when there is an unseen completion and no active blocker", () => {
     expect(
       resolveThreadStatusPill({
@@ -1168,6 +1189,53 @@ describe("resolveThreadRowClassName", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
     expect(className).toContain("bg-sidebar-row-active");
     expect(className).toContain("hover:bg-sidebar-row-active");
+  });
+});
+
+describe("partitionThreadsByProjectSection", () => {
+  const thread = (environmentId: string, projectId: string, id: string) => ({
+    environmentId,
+    projectId,
+    id,
+  });
+  const sectionKeyByMemberKey = new Map([
+    ["env-1:proj-a", "group-a"],
+    ["env-2:proj-a2", "group-a"],
+    ["env-1:proj-b", "group-b"],
+  ]);
+
+  it("buckets threads by their logical project key, preserving input order", () => {
+    const threads = [
+      thread("env-1", "proj-a", "t1"),
+      thread("env-1", "proj-b", "t2"),
+      thread("env-2", "proj-a2", "t3"),
+      thread("env-1", "proj-a", "t4"),
+    ];
+    const { sections, unassigned } = partitionThreadsByProjectSection(
+      threads,
+      sectionKeyByMemberKey,
+    );
+    expect(sections.get("group-a")?.map((entry) => entry.id)).toEqual(["t1", "t3", "t4"]);
+    expect(sections.get("group-b")?.map((entry) => entry.id)).toEqual(["t2"]);
+    expect(unassigned).toEqual([]);
+  });
+
+  it("returns threads with no matching group as unassigned instead of dropping them", () => {
+    const threads = [thread("env-1", "proj-a", "t1"), thread("env-9", "proj-x", "t2")];
+    const { sections, unassigned } = partitionThreadsByProjectSection(
+      threads,
+      sectionKeyByMemberKey,
+    );
+    expect(sections.get("group-a")?.map((entry) => entry.id)).toEqual(["t1"]);
+    expect(unassigned.map((entry) => entry.id)).toEqual(["t2"]);
+  });
+
+  it("produces no bucket for a group with no threads", () => {
+    const { sections } = partitionThreadsByProjectSection(
+      [thread("env-1", "proj-a", "t1")],
+      sectionKeyByMemberKey,
+    );
+    expect(sections.has("group-b")).toBe(false);
   });
 });
 

@@ -1,12 +1,26 @@
 # Organizing threads
 
-Pin a thread from its context menu to keep it in the pinned section above your active work.
-Pinned threads are shown independently of their project, including when you connect to more than
-one environment.
+## Projects in the sidebar
 
-On web and desktop, drag a pinned thread to change its position. On mobile, open the thread's menu
-and choose **Move up** or **Move down**. The order is stored by the server and appears on your
-other connected devices.
+On web and desktop, when you have more than one project, the sidebar groups threads under a
+header per project. Click a header to collapse or expand its section; the choice is remembered
+per project. A collapsed project shows a status dot while any of its threads is working or
+waiting on you, and its name brightens when a thread finished that you haven't looked at yet.
+Hovering a header reveals shortcuts to start a new thread in that project and to open its
+settings. The same project on several environments appears as one section, and a project that
+only lives on a remote environment is marked with a server icon.
+
+With a single project the sidebar stays a flat list. Snoozed and Settled threads always collect
+in their own shelves at the bottom, across all projects.
+
+## Pinning
+
+Pin a thread from its context menu to keep it at the top of its project's section, above that
+project's active work.
+
+On web and desktop, drag a pinned thread to change its position within its project. On mobile,
+open the thread's menu and choose **Move up** or **Move down**. The order is stored by the server
+and appears on your other connected devices.
 
 If reordering is unavailable for one environment, update the T3 Code server running in that
 environment. Older servers can still pin and unpin threads, but do not understand synced ordering;

@@ -66,6 +66,7 @@ import {
 } from "../../promptStashStore";
 import { ComposerStashBadge } from "./ComposerStashBadge";
 import { ComposerStashMenu } from "./ComposerStashMenu";
+import { BattleConditionsBadge, BattleConditionsDrawer } from "./BattleConditionsBadge";
 import {
   ComposerTasksBadge,
   ComposerTasksDrawer,
@@ -989,7 +990,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const [composerMenuAnchor, setComposerMenuAnchor] = useState<HTMLDivElement | null>(null);
   const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
-  const [isTasksDrawerOpen, setIsTasksDrawerOpen] = useState(false);
+  // One discriminator for the composer's top drawers: tasks and victory
+  // conditions share the space above the composer, so at most one is open.
+  const [openTopDrawer, setOpenTopDrawer] = useState<"tasks" | "battle" | null>(null);
+  const isTasksDrawerOpen = openTopDrawer === "tasks";
+  const isBattleDrawerOpen = openTopDrawer === "battle";
   const [dismissedTasksTurnId, setDismissedTasksTurnId] = useState<TurnId | null>(null);
   const [stashPulse, setStashPulse] = useState<{ key: number; active: boolean }>({
     key: 0,
@@ -2314,7 +2319,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     toggleStashMenu();
   }, [expandMobileComposer, isComposerCollapsedMobile, toggleStashMenu]);
   const toggleTasksDrawer = useCallback(() => {
-    setIsTasksDrawerOpen((open) => !open);
+    setOpenTopDrawer((open) => (open === "tasks" ? null : "tasks"));
+  }, []);
+  const toggleBattleDrawer = useCallback(() => {
+    setOpenTopDrawer((open) => (open === "battle" ? null : "battle"));
   }, []);
   const activeTasksTurnId = activeThread?.latestTurn?.turnId ?? null;
   const tasksDismissedForActiveTurn =
@@ -2327,7 +2335,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (activeTasksTurnId !== null) {
       setDismissedTasksTurnId(activeTasksTurnId);
     }
-    setIsTasksDrawerOpen(false);
+    setOpenTopDrawer((open) => (open === "tasks" ? null : open));
   }, [activeTasksTurnId]);
   const showInlineStashBadge =
     stashQueue.length > 0 &&
@@ -2362,20 +2370,51 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       steps={visibleTaskSteps}
     />
   ) : null;
+  // Victory conditions belong to the battle, not the turn: the tab persists
+  // for every thread in a battle instead of appearing with a plan.
+  const battleTarget =
+    activeThread && activeThread.battleId != null
+      ? {
+          environmentId: activeThread.environmentId,
+          projectId: activeThread.projectId,
+          battleId: activeThread.battleId,
+        }
+      : null;
+  const showInlineBattleBadge =
+    battleTarget !== null &&
+    !isBattleDrawerOpen &&
+    !hasBlockingComposerTopDrawer &&
+    (props.externalDrawerAttached || showComposerTopDrawer || isComposerCollapsedMobile);
+  const inlineBattleBadge =
+    showInlineBattleBadge && battleTarget !== null ? (
+      <BattleConditionsBadge
+        {...battleTarget}
+        expanded={false}
+        onToggle={toggleBattleDrawer}
+        placement="inline"
+      />
+    ) : null;
+  const showBattleShoulderTab =
+    battleTarget !== null &&
+    !isBattleDrawerOpen &&
+    !hasBlockingComposerTopDrawer &&
+    !props.externalDrawerAttached &&
+    !showComposerTopDrawer &&
+    !isComposerCollapsedMobile;
   useEffect(() => {
     if (visibleTasksProgress === null || visibleTaskSteps === null) {
-      setIsTasksDrawerOpen(false);
+      setOpenTopDrawer((open) => (open === "tasks" ? null : open));
     }
   }, [visibleTaskSteps, visibleTasksProgress]);
 
   useEffect(() => {
     if (hasBlockingComposerTopDrawer) {
-      setIsTasksDrawerOpen(false);
+      setOpenTopDrawer(null);
     }
   }, [hasBlockingComposerTopDrawer]);
 
   useEffect(() => {
-    setIsTasksDrawerOpen(false);
+    setOpenTopDrawer(null);
   }, [activeThreadId]);
 
   // Close the stash menu whenever the trigger-driven command menu opens so
@@ -2896,6 +2935,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {activePendingProgress?.customAnswer || "Write custom answer"}
                   </button>
+                  {inlineBattleBadge}
                   {inlineTasksBadge}
                   {inlineStashBadge}
                   {activePendingProgress?.activeQuestion?.multiSelect ? (
@@ -2927,6 +2967,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ) : null}
         </div>
       ) : null}
+      {isBattleDrawerOpen && !hasBlockingComposerTopDrawer && battleTarget !== null ? (
+        <BattleConditionsDrawer {...battleTarget} onCollapse={toggleBattleDrawer} />
+      ) : null}
       {isTasksDrawerOpen &&
       !hasBlockingComposerTopDrawer &&
       visibleTasksProgress &&
@@ -2947,12 +2990,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         !isComposerCollapsedMobile ? (
           <ComposerTasksBadge
             expanded={false}
+            hasLeadingShoulder={showBattleShoulderTab}
             hasTrailingShoulder={stashQueue.length > 0}
             onDismiss={dismissTasks}
             onToggle={toggleTasksDrawer}
             progress={visibleTasksProgress}
             steps={visibleTaskSteps}
           />
+        ) : null}
+        {showBattleShoulderTab && battleTarget !== null ? (
+          <BattleConditionsBadge {...battleTarget} expanded={false} onToggle={toggleBattleDrawer} />
         ) : null}
         {!props.externalDrawerAttached &&
         !showComposerTopDrawer &&
@@ -3004,6 +3051,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     : prompt.trim() ||
                       (noProviderAvailable ? "Enable a provider in Settings" : "Ask anything...")}
                 </button>
+                {inlineBattleBadge}
                 {inlineTasksBadge}
                 {inlineStashBadge}
                 <button
@@ -3232,6 +3280,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     data-chat-composer-mobile-pending-actions="true"
                     className="absolute bottom-0 right-0 flex items-center justify-end gap-1"
                   >
+                    {inlineBattleBadge}
                     {inlineTasksBadge}
                     {inlineStashBadge}
                     <ComposerPrimaryActions
@@ -3357,6 +3406,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {showMobilePendingAnswerActions ? null : inlineBattleBadge}
                   {showMobilePendingAnswerActions ? null : inlineTasksBadge}
                   {showMobilePendingAnswerActions ? null : inlineStashBadge}
                   <ComposerFooterPrimaryActions

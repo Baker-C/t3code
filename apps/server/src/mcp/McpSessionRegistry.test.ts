@@ -1,10 +1,22 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  BattleId,
+  EnvironmentId,
+  IsoDateTime,
+  type OrchestrationThreadShell,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { HttpServer } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { layerTest as serverSettingsLayerTest } from "../serverSettings.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -19,16 +31,80 @@ const fakeEnvironment = ServerEnvironment.ServerEnvironment.of({
   getDescriptor: Effect.die("unused"),
 });
 
-const makeRegistry = (now: () => number, httpServer = fakeHttpServer) =>
+const threadShell = (threadId: ThreadId, battleId: BattleId | null): OrchestrationThreadShell => ({
+  id: threadId,
+  projectId: ProjectId.make("project-1"),
+  battleId,
+  title: "Thread",
+  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+  runtimeMode: "auto",
+  interactionMode: "default",
+  branch: null,
+  worktreePath: null,
+  latestTurn: null,
+  createdAt: IsoDateTime.make("2026-01-01T00:00:00.000Z"),
+  updatedAt: IsoDateTime.make("2026-01-01T00:00:00.000Z"),
+  archivedAt: null,
+  settledOverride: null,
+  settledAt: null,
+  session: null,
+  latestUserMessageAt: null,
+  hasPendingApprovals: false,
+  hasPendingUserInput: false,
+  hasActionableProposedPlan: false,
+});
+
+// Only `getThreadShellById` is reachable from the registry; every other query
+// dies so a new read shows up as a failing test rather than a silent default.
+const projectionLayer = (battleId: BattleId | null) =>
+  Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getThreadShellById: (threadId) => Effect.succeed(Option.some(threadShell(threadId, battleId))),
+    getCommandReadModel: () => Effect.die("unexpected getCommandReadModel"),
+    getSnapshot: () => Effect.die("unexpected getSnapshot"),
+    getShellSnapshot: () => Effect.die("unexpected getShellSnapshot"),
+    getArchivedShellSnapshot: () => Effect.die("unexpected getArchivedShellSnapshot"),
+    searchThreads: () => Effect.die("unexpected searchThreads"),
+    getSnapshotSequence: () => Effect.die("unexpected getSnapshotSequence"),
+    getCounts: () => Effect.die("unexpected getCounts"),
+    getActiveProjectByWorkspaceRoot: () => Effect.die("unexpected getActiveProjectByWorkspaceRoot"),
+    getProjectShellById: () => Effect.die("unexpected getProjectShellById"),
+    getFirstActiveThreadIdByProjectId: () =>
+      Effect.die("unexpected getFirstActiveThreadIdByProjectId"),
+    getThreadCheckpointContext: () => Effect.die("unexpected getThreadCheckpointContext"),
+    getWorktreeOccupancy: () => Effect.succeed({ threads: [], projects: [] }),
+    getFullThreadDiffContext: () => Effect.die("unexpected getFullThreadDiffContext"),
+    getThreadDetailById: () => Effect.die("unexpected getThreadDetailById"),
+    getBattleById: () => Effect.die("unexpected getBattleById"),
+    getThreadDetailSnapshot: () => Effect.die("unexpected getThreadDetailSnapshot"),
+  });
+
+const makeRegistry = (
+  now: () => number,
+  options?: {
+    readonly httpServer?: HttpServer.HttpServer["Service"];
+    readonly enableBattleTools?: boolean;
+    readonly enableAgentBrowserAccess?: boolean;
+    readonly battleId?: BattleId | null;
+  },
+) =>
   McpSessionRegistry.__testing
     .make({
       now,
       livenessWindowMs: 100,
     })
     .pipe(
-      Effect.provideService(HttpServer.HttpServer, httpServer),
+      Effect.provideService(HttpServer.HttpServer, options?.httpServer ?? fakeHttpServer),
       Effect.provideService(ServerEnvironment.ServerEnvironment, fakeEnvironment),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          projectionLayer(options?.battleId ?? null),
+          serverSettingsLayerTest({
+            enableAgentBrowserAccess: options?.enableAgentBrowserAccess ?? true,
+            enableBattleTools: options?.enableBattleTools ?? false,
+          }),
+          NodeServices.layer,
+        ),
+      ),
     );
 
 it.effect("stores only a token hash, resolves the bearer token, and revokes by thread", () =>
@@ -54,6 +130,47 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
   }),
 );
 
+it.effect("grants the battle capability only to battle threads with the setting on", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("thread-battle");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const cases = [
+      { enableBattleTools: true, battleId: BattleId.make("battle-1"), expected: true },
+      { enableBattleTools: true, battleId: null, expected: false },
+      { enableBattleTools: false, battleId: BattleId.make("battle-1"), expected: false },
+    ] as const;
+
+    for (const testCase of cases) {
+      const registry = yield* makeRegistry(() => 1_000, {
+        enableBattleTools: testCase.enableBattleTools,
+        battleId: testCase.battleId,
+      });
+      const issued = yield* registry.issue({ threadId, providerInstanceId });
+      const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      const scope = yield* registry.resolve(token);
+      expect(scope?.capabilities.has("battle")).toBe(testCase.expected);
+      expect(issued.config.capabilities.includes("battle")).toBe(testCase.expected);
+      // Browser access is a separate switch; battle tools never imply preview.
+      expect(scope?.capabilities.has("preview")).toBe(true);
+    }
+  }),
+);
+
+it.effect("withholds the preview capability when agent browser access is off", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000, {
+      enableAgentBrowserAccess: false,
+      enableBattleTools: true,
+      battleId: BattleId.make("battle-2"),
+    });
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("thread-battle-only"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    expect(issued.config.capabilities).toEqual(["battle"]);
+  }),
+);
+
 it.effect("builds MCP endpoints from the bound server host", () =>
   Effect.gen(function* () {
     const cases = [
@@ -64,7 +181,9 @@ it.effect("builds MCP endpoints from the bound server host", () =>
     ] as const;
 
     for (const [hostname, expectedEndpoint] of cases) {
-      const registry = yield* makeRegistry(() => 1_000, makeFakeHttpServer(hostname));
+      const registry = yield* makeRegistry(() => 1_000, {
+        httpServer: makeFakeHttpServer(hostname),
+      });
       const issued = yield* registry.issue({
         threadId: ThreadId.make(`thread-${hostname}`),
         providerInstanceId: ProviderInstanceId.make("codex"),

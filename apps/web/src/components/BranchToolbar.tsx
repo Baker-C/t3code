@@ -1,5 +1,9 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  groupBattleThreadsByWorktree,
+  resolveWorktreeMates,
+} from "@t3tools/client-runtime/state/battles";
+import type { BattleId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -8,11 +12,15 @@ import {
   FolderIcon,
   HistoryIcon,
   MonitorIcon,
+  UsersIcon,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useProject, useThread, useThreadShellsForProjectRefs } from "../state/entities";
+import { useEnvironmentQuery } from "../state/query";
+import { vcsRepoRoots } from "../state/vcs";
+import { formatBattleWorktreeLine, formatRepoRootLabel } from "./battles.logic";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import {
   type EnvMode,
@@ -26,6 +34,7 @@ import {
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
+import { BranchToolbarBattleSelector } from "./BranchToolbarBattleSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
 import { Button } from "./ui/button";
@@ -40,6 +49,7 @@ import {
   MenuTrigger,
 } from "./ui/menu";
 import { Separator } from "./ui/separator";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 interface BranchToolbarProps {
   environmentId: EnvironmentId;
@@ -420,9 +430,18 @@ export const BranchToolbar = memo(function BranchToolbar({
   // of this project — the "keep going where I just was" follow-up flow. Only
   // drafts can hop; started server threads have their workspace pinned.
   const canUsePreviousWorktree = draftThread !== null && serverThread === null && !envModeLocked;
+  // A draft can still choose its battle; a started thread's binding is
+  // immutable, so it only reports the one it has.
+  const draftBattleId = draftThread?.battleId ?? null;
+  const activeBattleId = serverThread?.battleId ?? draftBattleId;
+  const canPickBattle = draftThread !== null && serverThread === null;
+  // The project's threads back the "previous worktree" seed, the worktree-mates
+  // chip, and the battle's join destinations, so one subscription covers them.
+  const needsProjectThreads =
+    canUsePreviousWorktree || activeWorktreePath !== null || activeBattleId !== null;
   const projectRefsForWorktreeLookup = useMemo(
-    () => (canUsePreviousWorktree && activeProjectRef ? [activeProjectRef] : []),
-    [canUsePreviousWorktree, activeProjectRef],
+    () => (needsProjectThreads && activeProjectRef ? [activeProjectRef] : []),
+    [needsProjectThreads, activeProjectRef],
   );
   const projectThreads = useThreadShellsForProjectRefs(projectRefsForWorktreeLookup);
   const previousWorktreeSeed = useMemo(
@@ -449,6 +468,96 @@ export const BranchToolbar = memo(function BranchToolbar({
       projectRef: activeProjectRef,
     });
   }, [activeProjectRef, draftId, previousWorktreeSeed, setDraftThreadContext, threadRef]);
+
+  // Threads sharing this worktree take turns: one runs, the others queue. The
+  // chip says how many share the domain; the count is the point, so it stays
+  // out of the way until there is company.
+  const worktreeMates = useMemo(
+    () =>
+      activeWorktreePath === null
+        ? []
+        : resolveWorktreeMates(projectThreads, {
+            id: serverThread?.id ?? threadId,
+            cwd: activeWorktreePath,
+          }),
+    [activeWorktreePath, projectThreads, serverThread, threadId],
+  );
+
+  // Battle destinations: join a worktree a sibling already opened, or cut a
+  // new one. Only a draft may still choose, so the RPC and the grouping stay
+  // off every other thread's path.
+  const canPickBattleDestination = canPickBattle && draftBattleId !== null && !envModeLocked;
+  const battleMembers = useMemo(
+    () =>
+      draftBattleId === null
+        ? []
+        : projectThreads.filter(
+            (thread) => thread.battleId === draftBattleId && thread.archivedAt === null,
+          ),
+    [draftBattleId, projectThreads],
+  );
+  const joinWorktrees = useMemo(
+    () =>
+      canPickBattleDestination
+        ? groupBattleThreadsByWorktree(battleMembers).worktrees.map((group) => ({
+            value: group.worktreePath,
+            label: formatBattleWorktreeLine(group),
+          }))
+        : [],
+    [battleMembers, canPickBattleDestination],
+  );
+  const repoRootsQuery = useEnvironmentQuery(
+    canPickBattleDestination && activeProject
+      ? vcsRepoRoots({ environmentId, input: { cwd: activeProject.workspaceRoot } })
+      : null,
+  );
+  const newWorktreeRoots = useMemo(() => {
+    const roots = repoRootsQuery.data?.roots ?? [];
+    // One repo means there is nothing to choose: the project root is the
+    // answer, and the picker stays out of the way.
+    if (roots.length <= 1) return [];
+    return roots.map((root) => ({ value: root.path, label: formatRepoRootLabel(root) }));
+  }, [repoRootsQuery.data]);
+  const onJoinWorktree = useCallback(
+    (worktreePath: string) => {
+      const group = groupBattleThreadsByWorktree(battleMembers).worktrees.find(
+        (candidate) => candidate.worktreePath === worktreePath,
+      );
+      if (!group || !activeProjectRef) return;
+      // Joining means running in a tree that already exists: the first send
+      // carries branch and path, and asks for no worktree preparation.
+      setDraftThreadContext(draftId ?? threadRef, {
+        branch: group.branch,
+        worktreePath: group.worktreePath,
+        envMode: "worktree",
+        repoRoot: null,
+        projectRef: activeProjectRef,
+      });
+    },
+    [activeProjectRef, battleMembers, draftId, setDraftThreadContext, threadRef],
+  );
+  const onBattleChange = useCallback(
+    (nextBattleId: BattleId | null) => {
+      // Switching battles drops the destination the previous battle seeded:
+      // its worktrees belong to it, not to the new one.
+      setDraftThreadContext(draftId ?? threadRef, {
+        battleId: nextBattleId,
+        worktreePath: null,
+        repoRoot: null,
+      });
+    },
+    [draftId, setDraftThreadContext, threadRef],
+  );
+  const onSelectNewWorktreeRoot = useCallback(
+    (repoRoot: string) => {
+      setDraftThreadContext(draftId ?? threadRef, {
+        worktreePath: null,
+        envMode: "worktree",
+        repoRoot,
+      });
+    },
+    [draftId, setDraftThreadContext, threadRef],
+  );
 
   const showEnvironmentPicker = Boolean(
     availableEnvironments && availableEnvironments.length > 1 && onEnvironmentChange,
@@ -505,6 +614,14 @@ export const BranchToolbar = memo(function BranchToolbar({
               ) : null}
             </>
           )}
+          {canPickBattle && activeProjectRef ? (
+            <BranchToolbarBattleSelector
+              environmentId={activeProjectRef.environmentId}
+              projectId={activeProjectRef.projectId}
+              battleId={draftBattleId}
+              onBattleChange={onBattleChange}
+            />
+          ) : null}
           {showGitControls ? (
             <BranchToolbarEnvModeSelector
               envLocked={envModeLocked}
@@ -513,10 +630,42 @@ export const BranchToolbar = memo(function BranchToolbar({
               onEnvModeChange={onEnvModeChange}
               previousWorktreeLabel={previousWorktreeLabel}
               onUsePreviousWorktree={onUsePreviousWorktree}
+              joinWorktrees={joinWorktrees}
+              newWorktreeRoots={newWorktreeRoots}
+              {...(canPickBattleDestination ? { onJoinWorktree, onSelectNewWorktreeRoot } : {})}
             />
           ) : null}
         </div>
       )}
+
+      {showGitControls && worktreeMates.length > 0 ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                data-composer-context-control
+                className="inline-flex h-7 shrink-0 items-center gap-1 px-1.5 text-sm font-medium text-muted-foreground/70 sm:h-6 sm:text-xs"
+              >
+                <UsersIcon className="size-3" />
+                <span
+                  data-composer-label
+                  className="group-data-[compact]/composer-context:hidden whitespace-nowrap"
+                >
+                  {worktreeMates.length + 1} threads here
+                </span>
+              </span>
+            }
+          >
+            <span className="sr-only">Threads sharing this worktree</span>
+          </TooltipTrigger>
+          <TooltipPopup side="top">
+            <span className="block max-w-56">
+              Sharing this worktree, one turn at a time:{" "}
+              {worktreeMates.map((mate) => mate.title).join(", ")}
+            </span>
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
 
       {showGitControls ? (
         <BranchToolbarBranchSelector

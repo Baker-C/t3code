@@ -1,4 +1,5 @@
 import {
+  BattleId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -8,6 +9,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  VictoryConditionId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -15,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -31,6 +34,7 @@ import {
   OrchestrationProjectionPipelineLive,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -2672,7 +2676,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(ThreadBackgroundLiveness.layer),
     Layer.provide(ThreadPlanProgress.layer),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -2787,6 +2791,92 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           faviconPath: "brand/icon.svg",
         },
       ]);
+    }),
+  );
+
+  it.effect("projects a battle row and surfaces it on the shell snapshot", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-battle-project"),
+        projectId: ProjectId.make("project-battle"),
+        title: "Battle Project",
+        workspaceRoot: "/tmp/project-battle",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+
+      yield* engine.dispatch({
+        type: "battle.create",
+        commandId: CommandId.make("cmd-battle-create"),
+        battleId: BattleId.make("battle-live"),
+        projectId: ProjectId.make("project-battle"),
+        title: "Ship Battles",
+        goal: "Group threads under one goal",
+        createdAt,
+      });
+
+      yield* engine.dispatch({
+        type: "battle.condition.add",
+        commandId: CommandId.make("cmd-battle-condition"),
+        battleId: BattleId.make("battle-live"),
+        conditionId: VictoryConditionId.make("condition-live"),
+        title: "Sidebar renders battles",
+      });
+
+      const battleRows = yield* sql<{
+        readonly title: string;
+        readonly slug: string;
+        readonly phase: string;
+        readonly victoryConditionsJson: string;
+      }>`
+        SELECT
+          title,
+          slug,
+          phase,
+          victory_conditions_json AS "victoryConditionsJson"
+        FROM projection_battles
+        WHERE battle_id = 'battle-live'
+      `;
+      assert.equal(battleRows.length, 1);
+      assert.equal(battleRows[0]?.title, "Ship Battles");
+      assert.equal(battleRows[0]?.slug, "ship-battles");
+      assert.equal(battleRows[0]?.phase, "scoping");
+      const persistedConditions = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Schema.Array(Schema.Unknown)),
+      )(battleRows[0]?.victoryConditionsJson ?? "[]");
+      assert.equal(persistedConditions.length, 1);
+
+      const projectorRows = yield* sql<{ readonly lastAppliedSequence: number }>`
+        SELECT
+          last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.battles}
+      `;
+      assert.equal(projectorRows.length, 1);
+
+      const shellSnapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+      const battle = shellSnapshot.battles.find((entry) => entry.id === "battle-live");
+      assert.equal(battle?.title, "Ship Battles");
+      assert.equal(battle?.goal, "Group threads under one goal");
+      assert.equal(battle?.victoryConditions.length, 1);
+      assert.equal(battle?.victoryConditions[0]?.title, "Sidebar renders battles");
+
+      // The command read model is what the decider validates against after a
+      // restart, so battles must survive the round trip through SQL.
+      const commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
+      assert.equal(
+        commandReadModel.battles.some((entry) => entry.id === "battle-live"),
+        true,
+      );
     }),
   );
 });

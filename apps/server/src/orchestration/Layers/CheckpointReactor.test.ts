@@ -55,7 +55,10 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
-import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import {
+  checkpointRefForThreadTurn,
+  preCheckpointRefForThreadTurn,
+} from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
@@ -1256,5 +1259,337 @@ describe("CheckpointReactor", () => {
       true,
     );
     expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+  });
+
+  it("captures a pre-turn ref only when another thread shares the worktree", async () => {
+    const shared = await createHarness({
+      seedFilesystemCheckpoints: false,
+      secondThreadSharingWorktree: true,
+    });
+
+    await Effect.runPromise(
+      shared.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-shared-pre"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("message-shared-pre"),
+          role: "user",
+          text: "start turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitForGitRefExists(
+      shared.cwd,
+      preCheckpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
+    );
+    expect(
+      gitShowFileAtRef(
+        shared.cwd,
+        preCheckpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        "README.md",
+      ),
+    ).toBe("v1\n");
+  });
+
+  it("captures no pre-turn ref for a thread that owns its worktree", async () => {
+    const owned = await createHarness({ seedFilesystemCheckpoints: false });
+
+    await Effect.runPromise(
+      owned.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-owned-pre"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("message-owned-pre"),
+          role: "user",
+          text: "start turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitForGitRefExists(owned.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0));
+    await owned.drain();
+
+    expect(
+      gitRefExists(owned.cwd, preCheckpointRefForThreadTurn(ThreadId.make("thread-1"), 1)),
+    ).toBe(false);
+  });
+
+  it("keeps a sibling's interleaved turn out of the pre-to-post turn diff", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      secondThreadSharingWorktree: true,
+    });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-interleaved"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-interleaved-start-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-1"),
+    });
+    await waitForGitRefExists(harness.cwd, preCheckpointRefForThreadTurn(threadId, 1));
+
+    NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v2\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-interleaved-complete-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-1"),
+      payload: { state: "completed" },
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1));
+
+    // The sibling thread finishes a turn of its own in the same directory
+    // between this thread's turn 1 and turn 2.
+    NodeFS.writeFileSync(NodePath.join(harness.cwd, "sibling.md"), "sibling work\n", "utf8");
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-interleaved-start-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-2"),
+    });
+    await waitForGitRefExists(harness.cwd, preCheckpointRefForThreadTurn(threadId, 2));
+
+    NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v3\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-interleaved-complete-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-2"),
+      payload: { state: "completed" },
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2));
+
+    const preToPost = runGit(harness.cwd, [
+      "diff",
+      "--name-only",
+      preCheckpointRefForThreadTurn(threadId, 2),
+      checkpointRefForThreadTurn(threadId, 2),
+    ]);
+    const postToPost = runGit(harness.cwd, [
+      "diff",
+      "--name-only",
+      checkpointRefForThreadTurn(threadId, 1),
+      checkpointRefForThreadTurn(threadId, 2),
+    ]);
+
+    expect(preToPost).toContain("README.md");
+    expect(preToPost).not.toContain("sibling.md");
+    expect(postToPost).toContain("sibling.md");
+  });
+
+  it("refuses a revert when a thread sharing the worktree has newer work", async () => {
+    const harness = await createHarness({ secondThreadSharingWorktree: true });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-revert-blocked"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-revert-blocked-diff-1"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-revert-blocked-diff-2"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-2"),
+        completedAt: "2026-01-01T00:01:00.000Z",
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 2,
+        createdAt,
+      }),
+    );
+    // The sibling finished a turn after the checkpoint being reverted to.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-revert-blocked-sibling-diff"),
+        threadId: ThreadId.make("thread-2"),
+        turnId: asTurnId("turn-sibling-1"),
+        completedAt: "2026-01-01T00:00:30.000Z",
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-2"), 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-blocked-request"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+
+    const failure = thread.activities.find(
+      (activity) => activity.kind === "checkpoint.revert.failed",
+    ) as { readonly payload: { readonly detail: string } } | undefined;
+    expect(failure?.payload.detail).toContain("Thread 2");
+    expect(failure?.payload.detail).toContain("shares this worktree");
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    // The filesystem is untouched: the guard runs before any git mutation.
+    expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+    expect(
+      gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
+    ).toBe(true);
+  });
+
+  it("allows a revert when the sharing thread has no work after the target", async () => {
+    const harness = await createHarness({ secondThreadSharingWorktree: true });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-revert-allowed"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-revert-allowed-diff-1"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        completedAt: "2026-01-01T00:01:00.000Z",
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-revert-allowed-diff-2"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-2"),
+        completedAt: "2026-01-01T00:02:00.000Z",
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 2,
+        createdAt,
+      }),
+    );
+    // The sibling's only turn predates the checkpoint being reverted to.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-revert-allowed-sibling-diff"),
+        threadId: ThreadId.make("thread-2"),
+        turnId: asTurnId("turn-sibling-1"),
+        completedAt: "2026-01-01T00:00:30.000Z",
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-2"), 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-allowed-request"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+    expect(
+      NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+    ).toBe("v2\n");
+    expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
   });
 });
