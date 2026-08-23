@@ -174,10 +174,13 @@ export class SourceControlRepositoryError extends Schema.TaggedErrorClass<Source
     provider: SourceControlProviderKind,
     operation: Schema.String,
     detail: Schema.String,
+    /** Underlying tool output (e.g. `gh` stderr), shown beneath `detail`. */
+    diagnostic: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Source control repository operation ${this.operation} failed for ${this.provider}: ${this.detail}`;
+    const summary = `Source control repository operation ${this.operation} failed for ${this.provider}: ${this.detail}`;
+    return this.diagnostic === undefined ? summary : `${summary}\n\n${this.diagnostic}`;
   }
 }

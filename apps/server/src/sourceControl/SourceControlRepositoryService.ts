@@ -39,6 +39,21 @@ export class SourceControlRepositoryService extends Context.Service<
   }
 >()("t3/sourceControl/SourceControlRepositoryService") {}
 
+/**
+ * Walks the wrapped provider/CLI error chain for the stderr the underlying tool
+ * produced. Every layer above it reports a fixed summary, so this excerpt is the
+ * only place the actual reason for a failure survives.
+ */
+function findStderrExcerpt(cause: unknown): string | undefined {
+  let current = cause;
+  for (let depth = 0; current !== null && typeof current === "object" && depth < 8; depth += 1) {
+    const excerpt = (current as { readonly stderrExcerpt?: unknown }).stderrExcerpt;
+    if (typeof excerpt === "string" && excerpt.length > 0) return excerpt;
+    current = (current as { readonly cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 function mapRepositoryError(operation: string, provider: SourceControlProviderKind) {
   return Effect.mapError((cause: unknown) =>
     isSourceControlRepositoryError(cause)
@@ -47,6 +62,7 @@ function mapRepositoryError(operation: string, provider: SourceControlProviderKi
           operation,
           provider,
           detail: "The source control operation could not be completed.",
+          diagnostic: findStderrExcerpt(cause),
           cause,
         }),
   );

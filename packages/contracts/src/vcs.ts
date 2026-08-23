@@ -109,6 +109,27 @@ export class VcsProcessSpawnError extends Schema.TaggedErrorClass<VcsProcessSpaw
   }
 }
 
+const MAX_STDERR_EXCERPT_LENGTH = 256;
+
+/**
+ * Condenses a failed process's stderr into a short, transport-safe line so the
+ * UI can show why a command failed. Credentials embedded in URLs are redacted
+ * and the result is bounded, because stderr is attacker- and tool-controlled
+ * text that crosses the wire to every client.
+ */
+export function vcsStderrExcerpt(stderr: string): string | undefined {
+  let printable = "";
+  for (const character of stderr) {
+    const codePoint = character.codePointAt(0);
+    printable += codePoint !== undefined && (codePoint < 32 || codePoint === 127) ? " " : character;
+  }
+  const normalized = printable
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/giu, "$1")
+    .trim()
+    .replace(/\s+/gu, " ");
+  return normalized.length > 0 ? normalized.slice(0, MAX_STDERR_EXCERPT_LENGTH) : undefined;
+}
+
 export class VcsProcessExitError extends Schema.TaggedErrorClass<VcsProcessExitError>()(
   "VcsProcessExitError",
   {
@@ -121,6 +142,7 @@ export class VcsProcessExitError extends Schema.TaggedErrorClass<VcsProcessExitE
     failureKind: Schema.optional(VcsProcessExitFailureKind),
     stderrLength: Schema.optional(NonNegativeInt),
     stderrTruncated: Schema.optional(Schema.Boolean),
+    stderrExcerpt: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
@@ -152,6 +174,7 @@ export class VcsProcessExitError extends Schema.TaggedErrorClass<VcsProcessExitE
       failureKind,
       stderrLength: error.stderr.length,
       stderrTruncated: error.stderrTruncated,
+      stderrExcerpt: vcsStderrExcerpt(error.stderr),
     });
   }
 }
