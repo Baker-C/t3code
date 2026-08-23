@@ -21,6 +21,8 @@ import {
   battleScopeProgress,
   battlesForProject,
   groupBattleThreadsByWorktree,
+  orchestratorThreadIds,
+  orchestratorThreadIdsEqual,
   partitionThreadsByBattle,
   resolveBattlePhase,
   resolveWorktreeMates,
@@ -39,6 +41,7 @@ function makeBattle({
     slug: `battle-${id}`,
     phase: "scoping",
     victoryConditions: [],
+    orchestratorThreadId: null,
     defeatedAt: null,
     createdAt: "2026-04-01T00:00:00.000Z",
     updatedAt: "2026-04-01T00:00:00.000Z",
@@ -329,5 +332,50 @@ describe("aggregateBattleStatus", () => {
         completed,
       ]),
     ).toBe("monitoring");
+  });
+});
+
+describe("orchestratorThreadIds", () => {
+  it("collects the orchestrator of every battle that has one", () => {
+    const ids = orchestratorThreadIds([
+      makeBattle({ id: "battle-1", orchestratorThreadId: ThreadId.make("orchestrator-1") }),
+      makeBattle({ id: "battle-2", orchestratorThreadId: ThreadId.make("orchestrator-2") }),
+      makeBattle({ id: "battle-3" }),
+    ]);
+
+    expect([...ids].sort()).toEqual(["orchestrator-1", "orchestrator-2"]);
+  });
+
+  it("reuses one empty set when no battle has landed an orchestrator", () => {
+    const none = orchestratorThreadIds([makeBattle({ id: "battle-1" })]);
+
+    expect(none.size).toBe(0);
+    expect(orchestratorThreadIds([])).toBe(none);
+  });
+});
+
+describe("orchestratorThreadIdsEqual", () => {
+  it("compares by membership, not by identity", () => {
+    const left = orchestratorThreadIds([
+      makeBattle({ id: "battle-1", orchestratorThreadId: ThreadId.make("orchestrator-1") }),
+    ]);
+    const right = orchestratorThreadIds([
+      makeBattle({ id: "battle-2", orchestratorThreadId: ThreadId.make("orchestrator-1") }),
+    ]);
+
+    expect(left).not.toBe(right);
+    expect(orchestratorThreadIdsEqual(left, right)).toBe(true);
+  });
+
+  it("separates sets that name different threads", () => {
+    const left = orchestratorThreadIds([
+      makeBattle({ id: "battle-1", orchestratorThreadId: ThreadId.make("orchestrator-1") }),
+    ]);
+    const right = orchestratorThreadIds([
+      makeBattle({ id: "battle-1", orchestratorThreadId: ThreadId.make("orchestrator-2") }),
+    ]);
+
+    expect(orchestratorThreadIdsEqual(left, right)).toBe(false);
+    expect(orchestratorThreadIdsEqual(left, orchestratorThreadIds([]))).toBe(false);
   });
 });

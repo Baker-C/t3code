@@ -668,6 +668,51 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "battle.orchestrator.set": {
+      const battle = yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      // Exactly one orchestrator per battle, forever. The reactor is allowed to
+      // retry its creation, and this is what keeps a retry from minting a
+      // second manager rather than failing loudly.
+      if (battle.orchestratorThreadId !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' already has orchestrator thread '${battle.orchestratorThreadId}'.`,
+        });
+      }
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // The orchestrator manages from inside the battle it belongs to, so its
+      // own membership is the outer bound on everything it can reach.
+      if (thread.battleId !== command.battleId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is not a member of battle '${command.battleId}' and cannot be its orchestrator.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.orchestrator-set",
+        payload: {
+          battleId: command.battleId,
+          orchestratorThreadId: command.threadId,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.create": {
       yield* requireProject({
         readModel,

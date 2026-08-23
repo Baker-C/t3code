@@ -5,6 +5,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Scope from "effect/Scope";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { BattleOrchestratorReactor } from "../Services/BattleOrchestratorReactor.ts";
 import { BattleRetirementReactor } from "../Services/BattleRetirementReactor.ts";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
@@ -75,6 +76,15 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.succeed(BattleOrchestratorReactor, {
+            start: () => {
+              started.push("battle-orchestrator-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
             publishThread: () => Effect.void,
             start: () => {
@@ -96,6 +106,7 @@ describe("OrchestrationReactor", () => {
       "checkpoint-reactor",
       "thread-deletion-reactor",
       "battle-retirement-reactor",
+      "battle-orchestrator-reactor",
       "agent-awareness-relay",
     ]);
 

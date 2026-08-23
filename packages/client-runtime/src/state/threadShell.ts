@@ -11,6 +11,7 @@ import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentThreadShell } from "./models.ts";
 import { scopeThreadShell } from "./models.ts";
+import { orchestratorThreadIds, orchestratorThreadIdsEqual } from "./battles.ts";
 import type { EnvironmentCatalogState } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -28,6 +29,7 @@ const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
   ProjectId,
   ReadonlyArray<ScopedThreadRef>
 > = new Map();
+const EMPTY_BATTLES: OrchestrationShellSnapshot["battles"] = Object.freeze([]);
 
 export function createEnvironmentThreadShellAtoms(input: {
   readonly catalogValueAtom: Atom.Atom<EnvironmentCatalogState>;
@@ -51,6 +53,26 @@ export function createEnvironmentThreadShellAtoms(input: {
       return new Map(threads.map((thread) => [thread.id, thread] as const));
     }).pipe(Atom.withLabel(`environment-thread-index:${environmentId}`)),
   );
+
+  /**
+   * The battle manager threads this environment owns, derived from the battles
+   * the shell already streams — no extra thread field and no extra request.
+   * The shell lists below filter against it so no thread list has to remember
+   * the orchestrator exists.
+   */
+  const environmentOrchestratorThreadIdsAtom = Atom.family((environmentId: EnvironmentId) => {
+    let previous: ReadonlySet<ThreadId> = new Set();
+    return Atom.make((get) => {
+      const next = orchestratorThreadIds(
+        get(input.snapshotAtom(environmentId))?.battles ?? EMPTY_BATTLES,
+      );
+      if (orchestratorThreadIdsEqual(previous, next)) {
+        return previous;
+      }
+      previous = next;
+      return next;
+    }).pipe(Atom.withLabel(`environment-orchestrator-thread-ids:${environmentId}`));
+  });
 
   const environmentThreadRefsAtom = Atom.family((environmentId: EnvironmentId) => {
     let previous: ReadonlyArray<ScopedThreadRef> = [];
@@ -126,9 +148,10 @@ export function createEnvironmentThreadShellAtoms(input: {
           get(environmentThreadRefsByProjectAtom(projectRef.environmentId)).get(
             projectRef.projectId,
           ) ?? EMPTY_SCOPED_THREAD_REFS;
+        const orchestrators = get(environmentOrchestratorThreadIdsAtom(projectRef.environmentId));
         for (const ref of refs) {
           const key = threadKey(ref);
-          if (seen.has(key)) {
+          if (seen.has(key) || orchestrators.has(ref.threadId)) {
             continue;
           }
           seen.add(key);
@@ -162,6 +185,9 @@ export function createEnvironmentThreadShellAtoms(input: {
   let previousThreadShells: ReadonlyArray<EnvironmentThreadShell> = [];
   const threadShellsAtom = Atom.make((get) => {
     const next = get(threadRefsAtom).flatMap((ref) => {
+      if (get(environmentOrchestratorThreadIdsAtom(ref.environmentId)).has(ref.threadId)) {
+        return [];
+      }
       const thread = get(threadShellAtomFamily(threadKey(ref)));
       return thread === null ? [] : [thread];
     });
@@ -177,10 +203,18 @@ export function createEnvironmentThreadShellAtoms(input: {
     environmentThreadIndexAtom,
     environmentThreadRefsAtom,
     environmentThreadRefsByProjectAtom,
+    environmentOrchestratorThreadIdsAtom,
     threadRefsAtom,
+    /** Every listable thread. Battle orchestrators are filtered out here. */
     threadShellsAtom,
+    /** Listable threads of the given projects. Battle orchestrators are filtered out here. */
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
       threadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),
+    /**
+     * Resolves one thread by ref, orchestrator or not. A direct URL to a
+     * battle's orchestrator is the escape hatch that keeps it reachable; it is
+     * deliberately not a surface, so nothing lists it.
+     */
     threadShellAtom: (ref: ScopedThreadRef) => threadShellAtomFamily(threadKey(ref)),
   };
 }

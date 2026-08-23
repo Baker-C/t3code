@@ -1,4 +1,5 @@
 import {
+  BattleId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -138,6 +139,28 @@ const SNAPSHOT: OrchestrationShellSnapshot = {
       id: OTHER_THREAD_ID,
       projectId: OTHER_PROJECT_ID,
       title: "Other thread",
+    },
+  ],
+};
+
+/** The same snapshot with THREAD_ID enlisted as a battle's orchestrator. */
+const SNAPSHOT_WITH_ORCHESTRATOR: OrchestrationShellSnapshot = {
+  ...SNAPSHOT,
+  snapshotSequence: 2,
+  battles: [
+    {
+      id: BattleId.make("battle-1"),
+      projectId: PROJECT_ID,
+      title: "Battle",
+      goal: null,
+      slug: "battle",
+      phase: "scoping",
+      victoryConditions: [],
+      orchestratorThreadId: THREAD_ID,
+      defeatedAt: null,
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+      deletedAt: null,
     },
   ],
 };
@@ -369,5 +392,36 @@ describe("environment entity projections", () => {
 
     expect(harness.registry.get(messagesAtom)).toBe(messages);
     expect(harness.registry.get(activitiesAtom)).toBe(activities);
+  });
+});
+
+describe("orchestrator threads", () => {
+  it("drops a battle's orchestrator from the shell lists but still resolves it by ref", () => {
+    const harness = makeHarness();
+    const projectRef = { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID };
+    const threadRef = { environmentId: ENVIRONMENT_ID, threadId: THREAD_ID };
+    const projectThreadsAtom = harness.threadShells.threadShellsForProjectRefsAtom([projectRef]);
+
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom).map((t) => t.id)).toEqual([
+      THREAD_ID,
+      OTHER_THREAD_ID,
+    ]);
+    expect(harness.registry.get(projectThreadsAtom).map((thread) => thread.id)).toEqual([
+      THREAD_ID,
+    ]);
+
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success(shellState(SNAPSHOT_WITH_ORCHESTRATOR)),
+    );
+
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom).map((t) => t.id)).toEqual([
+      OTHER_THREAD_ID,
+    ]);
+    expect(harness.registry.get(projectThreadsAtom)).toEqual([]);
+    // The direct URL is the escape hatch: resolving by ref is untouched.
+    expect(harness.registry.get(harness.threadShells.threadShellAtom(threadRef))?.id).toBe(
+      THREAD_ID,
+    );
   });
 });

@@ -1,6 +1,10 @@
 import {
   BattleId,
   BattlePhase,
+  IsoDateTime,
+  MessageId,
+  OrchestrationMessageRole,
+  PositiveInt,
   ThreadId,
   TrimmedNonEmptyString,
   VictoryCondition,
@@ -33,6 +37,12 @@ export const BattleToolErrorReason = Schema.Literals([
   "battle-unavailable",
   "read-failed",
   "dispatch-failed",
+  // Orchestrator-only refusals. They are separate reasons because the agent
+  // can act on each differently: re-read the battle, pick another target, or
+  // stop trying to message itself.
+  "not-orchestrator",
+  "target-not-in-battle",
+  "target-is-orchestrator",
 ]);
 export type BattleToolErrorReason = typeof BattleToolErrorReason.Type;
 
@@ -51,6 +61,9 @@ const BattleMemberThread = Schema.Struct({
   // The thread this tool call came from, so the agent can tell itself apart
   // from its siblings without knowing its own id.
   isCallingThread: Schema.Boolean,
+  // The battle's manager thread. Ships to members too, so a member agent can
+  // tell the orchestrator apart from its peers.
+  isOrchestrator: Schema.Boolean,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   sessionStatus: Schema.NullOr(TrimmedNonEmptyString),
@@ -151,3 +164,73 @@ export const BattleToolkit = Toolkit.make(
   BattleConditionUpdateTool,
   BattleConditionStrikeTool,
 );
+
+/**
+ * The default and the ceiling for `battle_thread_read`. The read is bounded on
+ * both ends so one tool call can never pull a whole member transcript into the
+ * orchestrator's context.
+ */
+export const BATTLE_THREAD_READ_DEFAULT_LIMIT = 20;
+export const BATTLE_THREAD_READ_MAX_LIMIT = 100;
+
+const BattleThreadSendResult = Schema.Struct({
+  threadId: ThreadId,
+  // True when the target was already mid-turn. The send still landed; it sits
+  // behind the running turn instead of starting one now.
+  queued: Schema.Boolean,
+}).annotate({
+  description:
+    "The message is on its way. The member's reply is delivered to this thread on its own when the turn finishes.",
+});
+
+const BattleThreadMessage = Schema.Struct({
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+
+const BattleThreadReadResult = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  // Chronological, oldest first, so the last entry is the newest message.
+  messages: Schema.Array(BattleThreadMessage),
+});
+
+export const BattleThreadSendTool = Tool.make("battle_thread_send", {
+  description:
+    "Send a message to one member thread of this battle, as its user. Only the battle's orchestrator thread may call this, and only for a thread fighting the same battle. The call returns as soon as the message is recorded: it never waits for the answer, and a send to a thread that is already mid-turn queues behind that turn rather than failing (the result reports queued=true). The member's reply is delivered to you automatically when its turn finishes, so do not poll for it and do not send again to check.",
+  parameters: Schema.Struct({
+    threadId: ThreadId,
+    message: TrimmedNonEmptyString,
+  }),
+  success: BattleThreadSendResult,
+  failure: BattleToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Message a battle thread")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false);
+
+export const BattleThreadReadTool = Tool.make("battle_thread_read", {
+  description: `Read the most recent messages of one member thread of this battle. Only the battle's orchestrator thread may call this, and only for a thread fighting the same battle. Use it to catch up on a thread you have not messaged, or to re-read context you have lost — replies to your own sends already arrive on their own. Messages come back oldest first, capped by limit (default ${BATTLE_THREAD_READ_DEFAULT_LIMIT}, maximum ${BATTLE_THREAD_READ_MAX_LIMIT}).`,
+  parameters: Schema.Struct({
+    threadId: ThreadId,
+    limit: Schema.optional(PositiveInt),
+  }),
+  success: BattleThreadReadResult,
+  failure: BattleToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Read a battle thread")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
+/**
+ * The cross-thread half of the battle surface, split out so it can be granted
+ * on its own capability. Every tool here reaches into a thread other than the
+ * caller's, which is exactly what the plain `battle` capability must not buy.
+ */
+export const BattleOrchestratorToolkit = Toolkit.make(BattleThreadSendTool, BattleThreadReadTool);

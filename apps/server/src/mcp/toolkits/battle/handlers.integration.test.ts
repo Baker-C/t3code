@@ -4,6 +4,7 @@ import {
   BattleId,
   CommandId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -22,6 +23,7 @@ import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEngineLive } from "../../../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../../../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../../../orchestration/Layers/ProjectionSnapshotQuery.ts";
+import { battleIdFromOrchestratorSendMessageId } from "../../../orchestration/battleOrchestrator.ts";
 import * as ThreadBackgroundLiveness from "../../../orchestration/ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../../../orchestration/ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -62,6 +64,7 @@ interface BattleFixture {
   readonly battleId: BattleId;
   readonly callerThreadId: ThreadId;
   readonly mateThreadId: ThreadId;
+  readonly orchestratorThreadId: ThreadId;
 }
 
 /**
@@ -75,6 +78,7 @@ const seedBattle = Effect.fn("seedBattle")(function* (name: string) {
     battleId: BattleId.make(`battle-${name}`),
     callerThreadId: ThreadId.make(`thread-caller-${name}`),
     mateThreadId: ThreadId.make(`thread-mate-${name}`),
+    orchestratorThreadId: ThreadId.make(`thread-orchestrator-${name}`),
   };
 
   yield* engine.dispatch({
@@ -100,6 +104,7 @@ const seedBattle = Effect.fn("seedBattle")(function* (name: string) {
   for (const [threadId, title] of [
     [fixture.callerThreadId, "Frontend"],
     [fixture.mateThreadId, "Backend"],
+    [fixture.orchestratorThreadId, "Orchestrator"],
   ] as const) {
     yield* engine.dispatch({
       type: "thread.create",
@@ -122,7 +127,10 @@ const seedBattle = Effect.fn("seedBattle")(function* (name: string) {
 
 /** Runs a tool call as the agent driving `threadId`, the way MCP would. */
 const asCallingThread =
-  (threadId: ThreadId) =>
+  (
+    threadId: ThreadId,
+    capabilities: ReadonlyArray<McpInvocationContext.McpCapability> = ["battle"],
+  ) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, {
@@ -130,10 +138,24 @@ const asCallingThread =
         threadId,
         providerSessionId: "provider-session-1",
         providerInstanceId: ProviderInstanceId.make("codex"),
-        capabilities: new Set<McpInvocationContext.McpCapability>(["battle"]),
+        capabilities: new Set<McpInvocationContext.McpCapability>(capabilities),
         issuedAt: 1,
       } satisfies McpInvocationContext.McpInvocationScope),
     );
+
+/** Names the battle's orchestrator, the way the orchestrator reactor does. */
+const setOrchestrator = Effect.fn("setOrchestrator")(function* (
+  name: string,
+  fixture: BattleFixture,
+) {
+  const engine = yield* OrchestrationEngineService;
+  yield* engine.dispatch({
+    type: "battle.orchestrator.set",
+    commandId: CommandId.make(`cmd-${name}-orchestrator`),
+    battleId: fixture.battleId,
+    threadId: fixture.orchestratorThreadId,
+  });
+});
 
 const readProjectedConditions = Effect.fn("readProjectedConditions")(function* (
   battleId: BattleId,
@@ -271,6 +293,7 @@ it.layer(IntegrationLayer)("battle toolkit against the real orchestration engine
           threadId: fixture.callerThreadId,
           title: "Frontend",
           isCallingThread: true,
+          isOrchestrator: false,
           branch: "battle/streaming-diffs",
           worktreePath: null,
           sessionStatus: null,
@@ -279,11 +302,99 @@ it.layer(IntegrationLayer)("battle toolkit against the real orchestration engine
           threadId: fixture.mateThreadId,
           title: "Backend",
           isCallingThread: false,
+          isOrchestrator: false,
           branch: "battle/streaming-diffs",
           worktreePath: null,
           sessionStatus: null,
         },
       ]);
+    }),
+  );
+
+  it.effect("battle_status marks the orchestrator once the battle names one", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("orchestrated");
+      yield* setOrchestrator("orchestrated", fixture);
+
+      const status = yield* asCallingThread(fixture.callerThreadId)(
+        __testing.handlers.battle_status(),
+      );
+
+      const byId = new Map(status.threads.map((thread) => [thread.threadId, thread]));
+      expect(byId.get(fixture.orchestratorThreadId)?.isOrchestrator).toBe(true);
+      expect(byId.get(fixture.callerThreadId)?.isOrchestrator).toBe(false);
+    }),
+  );
+
+  it.effect("battle_thread_send drives a real turn into a member thread", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("send");
+      yield* setOrchestrator("send", fixture);
+      const asOrchestrator = asCallingThread(fixture.orchestratorThreadId, [
+        "battle",
+        "battle-orchestrator",
+      ]);
+
+      const sent = yield* asOrchestrator(
+        __testing.orchestratorHandlers.battle_thread_send({
+          threadId: fixture.mateThreadId,
+          message: "Scope the projector change",
+        }),
+      );
+
+      expect(sent).toEqual({ threadId: fixture.mateThreadId, queued: false });
+
+      // The decider accepted the command, so the message is in the member's
+      // own projected transcript, marked as orchestrator-initiated.
+      const messages = yield* asOrchestrator(
+        __testing.orchestratorHandlers.battle_thread_read({ threadId: fixture.mateThreadId }),
+      );
+      expect(messages.messages).toHaveLength(1);
+      const only = messages.messages[0];
+      expect(only?.role).toBe("user");
+      expect(only?.text).toBe("Scope the projector change");
+      expect(battleIdFromOrchestratorSendMessageId(only?.messageId ?? MessageId.make("x"))).toBe(
+        fixture.battleId,
+      );
+    }),
+  );
+
+  it.effect("refuses a target outside the battle and the orchestrator itself", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("refusals");
+      yield* setOrchestrator("refusals", fixture);
+      const asOrchestrator = asCallingThread(fixture.orchestratorThreadId, [
+        "battle",
+        "battle-orchestrator",
+      ]);
+
+      const outsider = yield* asOrchestrator(
+        __testing.orchestratorHandlers
+          .battle_thread_send({
+            threadId: ThreadId.make("thread-caller-send"),
+            message: "wrong battle",
+          })
+          .pipe(Effect.flip),
+      );
+      expect(outsider.reason).toBe("target-not-in-battle");
+
+      const self = yield* asOrchestrator(
+        __testing.orchestratorHandlers
+          .battle_thread_send({
+            threadId: fixture.orchestratorThreadId,
+            message: "talking to myself",
+          })
+          .pipe(Effect.flip),
+      );
+      expect(self.reason).toBe("target-is-orchestrator");
+
+      // A member of the same battle holds only the plain battle capability.
+      const member = yield* asCallingThread(fixture.callerThreadId)(
+        __testing.orchestratorHandlers
+          .battle_thread_read({ threadId: fixture.mateThreadId })
+          .pipe(Effect.flip),
+      );
+      expect(member.reason).toBe("not-orchestrator");
     }),
   );
 });

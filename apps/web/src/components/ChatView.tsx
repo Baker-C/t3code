@@ -63,6 +63,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
@@ -523,27 +524,31 @@ function formatOutgoingPrompt(params: {
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 
+interface ChatViewBaseProps {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  onDiffPanelOpen?: () => void;
+  reserveTitleBarControlInset?: boolean;
+  forceExpandedMobileComposer?: boolean;
+  /**
+   * Content pinned above the transcript, inside the scroll container, so it
+   * scrolls away as the conversation grows. The battle page puts its battle
+   * context here.
+   */
+  header?: ReactNode;
+}
+
 type ChatViewProps =
-  | {
-      environmentId: EnvironmentId;
-      threadId: ThreadId;
-      onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
-      forceExpandedMobileComposer?: boolean;
+  | (ChatViewBaseProps & {
       threadSyncPhase?: ThreadSyncPhase | null;
       routeKind: "server";
       draftId?: never;
-    }
-  | {
-      environmentId: EnvironmentId;
-      threadId: ThreadId;
-      onDiffPanelOpen?: () => void;
-      reserveTitleBarControlInset?: boolean;
-      forceExpandedMobileComposer?: boolean;
+    })
+  | (ChatViewBaseProps & {
       threadSyncPhase?: never;
       routeKind: "draft";
       draftId: DraftId;
-    };
+    });
 
 interface TerminalLaunchContext {
   threadId: ThreadId;
@@ -1213,6 +1218,7 @@ function ChatViewContent(props: ChatViewProps) {
     onDiffPanelOpen,
     reserveTitleBarControlInset = true,
     forceExpandedMobileComposer = false,
+    header = null,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
@@ -6443,6 +6449,7 @@ function ChatViewContent(props: ChatViewProps) {
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
                 loadEarlier={loadEarlierTurns}
+                header={header}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

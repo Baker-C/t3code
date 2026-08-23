@@ -1934,9 +1934,10 @@ const SidebarProjectSectionHeader = memo(function SidebarProjectSectionHeader(pr
 });
 
 /**
- * Collapsible header for one battle inside a project section. Carries the
- * battle's scope progress and, when collapsed, its members' rolled-up status —
- * the same rollup a collapsed project section shows, so a closed battle still
+ * Header for one battle inside a project section: clicking it opens the
+ * battle's page, the chevron collapses its member list. Carries the battle's
+ * scope progress and, when collapsed, its members' rolled-up status — the
+ * same rollup a collapsed project section shows, so a closed battle still
  * signals live work. Defeated battles get the reopen action instead.
  */
 const SidebarBattleRow = memo(function SidebarBattleRow(props: {
@@ -1945,10 +1946,11 @@ const SidebarBattleRow = memo(function SidebarBattleRow(props: {
   collapsed: boolean;
   battleKey: string;
   onToggle: (battleKey: string) => void;
+  onOpen: (battle: EnvironmentBattle) => void;
   onNewThread?: ((battle: EnvironmentBattle) => void) | undefined;
   onReopen?: ((battle: EnvironmentBattle) => void) | undefined;
 }) {
-  const { battle, battleKey, collapsed, onNewThread, onReopen, onToggle, threads } = props;
+  const { battle, battleKey, collapsed, onNewThread, onOpen, onReopen, onToggle, threads } = props;
   const aggregateStatus = useMemo(
     () =>
       collapsed
@@ -1959,16 +1961,24 @@ const SidebarBattleRow = memo(function SidebarBattleRow(props: {
     [collapsed, threads],
   );
   const progress = battleScopeProgress(battle);
-  const handleToggle = useCallback(() => onToggle(battleKey), [battleKey, onToggle]);
+  const handleOpen = useCallback(() => onOpen(battle), [battle, onOpen]);
+  const handleToggle = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onToggle(battleKey);
+    },
+    [battleKey, onToggle],
+  );
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent) => {
       if ((event.target as HTMLElement).closest("button")) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        onToggle(battleKey);
+        onOpen(battle);
       }
     },
-    [battleKey, onToggle],
+    [battle, onOpen],
   );
   const handleReopen = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -1992,20 +2002,24 @@ const SidebarBattleRow = memo(function SidebarBattleRow(props: {
       <div
         role="button"
         tabIndex={0}
-        aria-expanded={!collapsed}
         aria-label={`${battle.title} battle`}
         data-testid="sidebar-battle-row"
-        onClick={handleToggle}
+        onClick={handleOpen}
         onKeyDown={handleKeyDown}
         className="group/battle-row flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md pe-2 ps-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <ChevronDownIcon
-          aria-hidden
-          className={cn(
-            "size-3 shrink-0 text-sidebar-muted-foreground/70 transition-transform",
-            collapsed && "-rotate-90",
-          )}
-        />
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? `Expand ${battle.title}` : `Collapse ${battle.title}`}
+          onClick={handleToggle}
+          className="flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground/70 outline-none hover:text-sidebar-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronDownIcon
+            aria-hidden
+            className={cn("size-3 transition-transform", collapsed && "-rotate-90")}
+          />
+        </button>
         <SwordsIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground/80" />
         <span className="min-w-0 truncate text-xs font-medium text-sidebar-foreground/85">
           {battle.title}
@@ -2533,6 +2547,18 @@ export default function Sidebar() {
     [setCollapsedBattleKeys],
   );
   const reopenBattle = useAtomCommand(battleEnvironment.reopen, "sidebar:battle:reopen");
+  // Opening a battle is plain navigation to its page; collapsing its member
+  // list stays on the row's chevron.
+  const handleOpenBattle = useCallback(
+    (battle: EnvironmentBattle) => {
+      if (isMobile) setOpenMobile(false);
+      void router.navigate({
+        to: "/battles/$environmentId/$battleId",
+        params: { environmentId: battle.environmentId, battleId: battle.id },
+      });
+    },
+    [isMobile, router, setOpenMobile],
+  );
   const handleNewThreadInBattle = useCallback(
     (battle: EnvironmentBattle) => {
       if (isMobile) setOpenMobile(false);
@@ -4352,6 +4378,7 @@ export default function Sidebar() {
                           collapsed={collapsedBattleKeySet.has(battleKey)}
                           battleKey={battleKey}
                           onToggle={toggleBattleCollapsed}
+                          onOpen={handleOpenBattle}
                           onNewThread={handleNewThreadInBattle}
                         />,
                       );
@@ -4676,6 +4703,7 @@ export default function Sidebar() {
                             collapsed={collapsedBattleKeySet.has(battleKey)}
                             battleKey={battleKey}
                             onToggle={toggleBattleCollapsed}
+                            onOpen={handleOpenBattle}
                             onReopen={handleReopenBattle}
                           />,
                         );

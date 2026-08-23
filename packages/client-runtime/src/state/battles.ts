@@ -5,6 +5,7 @@ import {
   type OrchestrationShellSnapshot,
   type OrchestrationThreadShell,
   type ProjectId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 
@@ -34,6 +35,42 @@ export function battlesForProject(
   return snapshot.battles.filter(
     (battle) => battle.projectId === projectId && battle.deletedAt === null,
   );
+}
+
+const NO_ORCHESTRATOR_THREAD_IDS: ReadonlySet<ThreadId> = new Set();
+
+/**
+ * The manager threads of the given battles. Thread lists filter against this
+ * set so a battle's orchestrator never sits beside the members it drives — its
+ * only surface is the battle page. Resolving a thread by ref is untouched, so
+ * a direct URL to an orchestrator still opens it.
+ *
+ * Returns a shared empty set when no battle has an orchestrator, which keeps
+ * the common case reference-stable for memoized consumers.
+ */
+export function orchestratorThreadIds(
+  battles: readonly Pick<OrchestrationBattle, "orchestratorThreadId">[],
+): ReadonlySet<ThreadId> {
+  let ids: Set<ThreadId> | null = null;
+  for (const battle of battles) {
+    if (battle.orchestratorThreadId === null) continue;
+    ids ??= new Set<ThreadId>();
+    ids.add(battle.orchestratorThreadId);
+  }
+  return ids ?? NO_ORCHESTRATOR_THREAD_IDS;
+}
+
+/** Whether two orchestrator id sets name the same threads. */
+export function orchestratorThreadIdsEqual(
+  left: ReadonlySet<ThreadId>,
+  right: ReadonlySet<ThreadId>,
+): boolean {
+  if (left === right) return true;
+  if (left.size !== right.size) return false;
+  for (const id of left) {
+    if (!right.has(id)) return false;
+  }
+  return true;
 }
 
 function battleCreationTime(battle: OrchestrationBattle): number {

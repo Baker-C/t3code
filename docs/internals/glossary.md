@@ -111,6 +111,20 @@ Derived state, not a stored phase: every condition is resolved (`scoped` or `des
 
 The terminal battle phase, entered by `battle.declare-defeat`. The event carries the user's explicit `retireWorktrees` choice — the server never guesses which worktrees to remove — and a `defeatedAt` stamp. `battle.reopen` returns the battle to `fighting` and clears both. Reopening is lazy: nothing is re-provisioned until a member thread next starts a turn. See [decider.ts][8].
 
+#### Orchestrator thread
+
+The battle's manager thread, one per battle and never two: `battle.orchestrator.set` is server-only and the decider refuses it once `orchestratorThreadId` is set. [BattleOrchestratorReactor.ts][30] creates it on `battle.created` and adopts, in one startup pass, every live battle that still reads null — which is how battles that predate orchestrators get one without a data migration.
+
+It is a manager, not a fighter: no branch, no worktree, no checkpoints. `worktreePath: null` resolves to the project root, so it shares a [TurnGate](#turngate) permit with local-mode threads there. It is enlisted in its battle like any member, and the clients hide it from every thread list by deriving the orchestrator ids from the battles already in the shell — no new thread field. A direct URL still opens it; that is an escape hatch, not a surface.
+
+#### Report-back
+
+How a member's reply reaches the orchestrator. `battle_thread_send` is asynchronous: it returns as soon as the turn is dispatched, and when that turn settles [BattleOrchestratorReactor.ts][30] starts one orchestrator turn carrying the reply.
+
+Turn settling is projection-internal and emits no event, so the reactor triggers on `thread.session-set` leaving the `running` status and reads the settled turn back through [ProjectionSnapshotQuery.ts][31]. Attribution rides on the message id, minted by `orchestratorSendMessageId` in [battleOrchestrator.ts][32] — a durable marker in the event log rather than reactor memory, so a restart cannot mistake a user's turn for the orchestrator's.
+
+Four guards, all load-bearing: only orchestrator-initiated turns report; the orchestrator's own turns never report themselves; reports arriving while the orchestrator is mid-turn coalesce into one delivery; and a report never starts a member turn by itself — only a tool call does that.
+
 #### TurnGate
 
 Per-key mutual exclusion for provider turns, in [TurnGate.ts][28]. The key is the thread's resolved working directory (`worktreePath`, else the project's workspace root), **not** the battle id: two battle threads in different worktrees run concurrently, while two threads sharing one worktree serialize even across battles. The permit is held for the whole turn fiber and released on completion, failure, or interruption. Waiting threads surface as `thread.turnQueued` in the read model. Whether a cwd is shared is answered by [SharedWorktree.ts][29], which also drives the shared-cwd checkpoint policy: pre-turn refs, pre→post turn diffs, and a revert guard.
@@ -212,3 +226,6 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [27]: ../../apps/server/src/mcp/toolkits/battle/handlers.ts
 [28]: ../../apps/server/src/provider/TurnGate.ts
 [29]: ../../apps/server/src/checkpointing/SharedWorktree.ts
+[30]: ../../apps/server/src/orchestration/Layers/BattleOrchestratorReactor.ts
+[31]: ../../apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
+[32]: ../../apps/server/src/orchestration/battleOrchestrator.ts

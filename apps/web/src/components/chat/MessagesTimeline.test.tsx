@@ -1014,4 +1014,44 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("lucide-x");
     expect(markup).toContain('aria-label="Tool call failed"');
   });
+
+  it("renders the header above the transcript", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Hello")]}
+        header={<div data-testid="timeline-header">Battle context</div>}
+      />,
+    );
+
+    expect(markup).toContain("Battle context");
+    expect(markup.indexOf("Battle context")).toBeLessThan(markup.indexOf("Hello"));
+  });
+
+  it("keeps the header on screen while the thread has no messages", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        header={<div data-testid="timeline-header">Battle context</div>}
+      />,
+    );
+
+    expect(markup).toContain("Battle context");
+    expect(markup).toContain("Send a message to start the conversation.");
+  });
+
+  it("hides the empty placeholder under a header when asked, keeping the header", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[]}
+        hideEmptyPlaceholder
+        header={<div data-testid="timeline-header">Battle context</div>}
+      />,
+    );
+
+    expect(markup).toContain("Battle context");
+    expect(markup).not.toContain("Send a message to start the conversation.");
+  });
 });

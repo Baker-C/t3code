@@ -131,6 +131,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
    * The battle toolkit additionally requires the thread to be in a battle.
    * `battleId` is immutable at creation, so a credential minted for a
    * battle-less thread can never become wrongly capable later.
+   *
+   * `battle-orchestrator` narrows that further to the one thread the battle
+   * names as its orchestrator, because those tools reach into sibling threads
+   * rather than only into the battle record.
    */
   const resolveCapabilities = Effect.fn("McpSessionRegistry.resolveCapabilities")(function* (
     threadId: ThreadId,
@@ -161,6 +165,19 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const battleId = Option.getOrUndefined(thread)?.battleId;
       if (battleId != null) {
         capabilities.add("battle");
+        const battle = yield* projectionSnapshotQuery
+          .getBattleById(battleId)
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Could not read the battle while issuing an MCP credential; withholding orchestrator tools.",
+                { cause, threadId, battleId },
+              ).pipe(Effect.as(Option.none())),
+            ),
+          );
+        if (Option.getOrUndefined(battle)?.orchestratorThreadId === threadId) {
+          capabilities.add("battle-orchestrator");
+        }
       }
     }
     return capabilities;

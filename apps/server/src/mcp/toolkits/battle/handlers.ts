@@ -1,6 +1,7 @@
 import {
   battleLinesDrawn,
   CommandId,
+  IsoDateTime,
   type BattleId,
   type OrchestrationBattle,
   type OrchestrationCommand,
@@ -9,13 +10,22 @@ import {
   VictoryConditionId,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { orchestratorSendMessageId } from "../../../orchestration/battleOrchestrator.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { BattleToolError, BattleToolkit, type BattleStatusResult } from "./tools.ts";
+import {
+  BATTLE_THREAD_READ_DEFAULT_LIMIT,
+  BATTLE_THREAD_READ_MAX_LIMIT,
+  BattleOrchestratorToolkit,
+  BattleToolError,
+  BattleToolkit,
+  type BattleStatusResult,
+} from "./tools.ts";
 
 const readFailed = (operation: string, cause: unknown) =>
   Effect.logWarning("Battle tool could not read the current battle state.", {
@@ -71,6 +81,82 @@ const requireBattleScope = Effect.fn("BattleToolkit.requireBattleScope")(functio
   return { threadId: invocation.threadId, battle: battle.value };
 });
 
+interface BattleScope {
+  readonly threadId: ThreadId;
+  readonly battle: OrchestrationBattle;
+}
+
+/**
+ * Resolves the caller as its battle's orchestrator.
+ *
+ * Two checks, not one: the capability says the credential was minted for an
+ * orchestrator, and the battle read says it still is one. The second is what
+ * survives a stale credential.
+ */
+const requireOrchestratorScope = Effect.fn("BattleToolkit.requireOrchestratorScope")(function* () {
+  const invocation = yield* McpInvocationContext.McpInvocationContext;
+  if (!invocation.capabilities.has("battle-orchestrator")) {
+    return yield* new BattleToolError({
+      reason: "not-orchestrator",
+      detail:
+        "Only the battle's orchestrator thread can reach other threads. This thread fights the battle; it does not manage it.",
+    });
+  }
+  const scope = yield* requireBattleScope();
+  if (scope.battle.orchestratorThreadId !== scope.threadId) {
+    return yield* new BattleToolError({
+      reason: "not-orchestrator",
+      detail: `Battle ${scope.battle.id} does not name this thread as its orchestrator.`,
+    });
+  }
+  return scope;
+});
+
+/**
+ * Resolves a target thread of the caller's own battle.
+ *
+ * Membership is read from the shell snapshot, which carries only active
+ * threads, so an archived thread cannot be targeted. Reading the caller's
+ * battle from its own thread (in `requireBattleScope`) and then constraining
+ * the target to that battle is the whole blast radius of these tools.
+ *
+ * Security posture, stated plainly: the orchestrator reads member transcripts
+ * and can start turns from what it reads, so a member agent can influence what
+ * other members are asked to do. The membership check keeps that influence
+ * inside one battle, and `enableBattleTools` gates the surface entirely. That
+ * is the accepted trade — there is no per-thread permission model here.
+ */
+const requireMemberTarget = Effect.fn("BattleToolkit.requireMemberTarget")(function* (
+  scope: BattleScope,
+  targetThreadId: ThreadId,
+): Effect.fn.Return<OrchestrationThreadShell, BattleToolError, ProjectionSnapshotQuery> {
+  if (targetThreadId === scope.battle.orchestratorThreadId) {
+    return yield* new BattleToolError({
+      reason: "target-is-orchestrator",
+      detail: "That thread is this battle's orchestrator, which is you. Target a member thread.",
+    });
+  }
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const shell = yield* projectionSnapshotQuery
+    .getShellSnapshot()
+    .pipe(Effect.catch((cause) => readFailed("getShellSnapshot", cause)));
+  const target = shell.threads.find((thread) => thread.id === targetThreadId);
+  if (target === undefined || target.battleId !== scope.battle.id) {
+    return yield* new BattleToolError({
+      reason: "target-not-in-battle",
+      detail: `Thread ${targetThreadId} is not an active member of battle ${scope.battle.id}. Call battle_status for the threads you can reach.`,
+    });
+  }
+  return target;
+});
+
+/**
+ * A target in one of these states is mid-turn. The send still lands — the turn
+ * gate serializes it behind the running turn — so this only decides what the
+ * result tells the agent.
+ */
+const BUSY_SESSION_STATUSES: ReadonlySet<string> = new Set(["starting", "running"]);
+
 /**
  * The member threads are read separately from the battle because the battle
  * entity owns no threads — membership lives on the thread's immutable
@@ -98,6 +184,7 @@ const readStatus = Effect.fn("BattleToolkit.readStatus")(function* (scope: {
       threadId: thread.id,
       title: thread.title,
       isCallingThread: thread.id === scope.threadId,
+      isOrchestrator: thread.id === scope.battle.orchestratorThreadId,
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       sessionStatus: thread.session?.status ?? null,
@@ -193,5 +280,71 @@ const handlers = {
 
 export const BattleToolkitHandlersLive = BattleToolkit.toLayer(handlers);
 
+const orchestratorHandlers = {
+  battle_thread_send: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* requireOrchestratorScope();
+      const target = yield* requireMemberTarget(scope, input.threadId);
+      const crypto = yield* Crypto.Crypto;
+      const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const now = yield* DateTime.now;
+      const queued = BUSY_SESSION_STATUSES.has(target.session?.status ?? "");
+      yield* dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`server:battle-thread-send:${uuid}`),
+        threadId: target.id,
+        message: {
+          // The report-back reactor recognises an orchestrator-initiated turn
+          // from this id alone, so it must come from the shared minter.
+          messageId: orchestratorSendMessageId({ battleId: scope.battle.id, uuid }),
+          role: "user",
+          text: input.message,
+          attachments: [],
+        },
+        // The decider takes these from the target thread anyway; echoing the
+        // thread's own modes keeps the command from implying a change.
+        runtimeMode: target.runtimeMode,
+        interactionMode: target.interactionMode,
+        createdAt: IsoDateTime.make(DateTime.formatIso(now)),
+      });
+      return { threadId: target.id, queued };
+    }),
+  battle_thread_read: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* requireOrchestratorScope();
+      const target = yield* requireMemberTarget(scope, input.threadId);
+      const limit = Math.min(
+        input.limit ?? BATTLE_THREAD_READ_DEFAULT_LIMIT,
+        BATTLE_THREAD_READ_MAX_LIMIT,
+      );
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      // Windowed on purpose: the unwindowed read hydrates the entire thread
+      // body, which is far more than a catch-up needs. One turn yields at
+      // least one message, so `limit` turns always cover `limit` messages.
+      const snapshot = yield* projectionSnapshotQuery
+        .getThreadDetailSnapshot(target.id, { turnLimit: limit })
+        .pipe(Effect.catch((cause) => readFailed("getThreadDetailSnapshot", cause)));
+      if (Option.isNone(snapshot)) {
+        return yield* new BattleToolError({
+          reason: "read-failed",
+          detail: `Thread ${target.id} could not be read.`,
+        });
+      }
+      return {
+        threadId: target.id,
+        title: target.title,
+        messages: snapshot.value.thread.messages.slice(-limit).map((message) => ({
+          messageId: message.id,
+          role: message.role,
+          text: message.text,
+          createdAt: message.createdAt,
+        })),
+      };
+    }),
+} satisfies Parameters<typeof BattleOrchestratorToolkit.toLayer>[0];
+
+export const BattleOrchestratorToolkitHandlersLive =
+  BattleOrchestratorToolkit.toLayer(orchestratorHandlers);
+
 /** Exposed for tests. */
-export const __testing = { handlers };
+export const __testing = { handlers, orchestratorHandlers };

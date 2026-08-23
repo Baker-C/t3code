@@ -8,6 +8,7 @@ import {
   BattleConditionUpdatedPayload as ContractsBattleConditionUpdatedPayloadSchema,
   BattleConditionStruckPayload as ContractsBattleConditionStruckPayloadSchema,
   BattlePhaseChangedPayload as ContractsBattlePhaseChangedPayloadSchema,
+  BattleOrchestratorSetPayload as ContractsBattleOrchestratorSetPayloadSchema,
   BattleDeletedPayload as ContractsBattleDeletedPayloadSchema,
   ThreadCreatedPayload as ContractsThreadCreatedPayloadSchema,
   ThreadTurnQueueUpdatedPayload as ContractsThreadTurnQueueUpdatedPayloadSchema,
@@ -48,6 +49,7 @@ export const BattleConditionAddedPayload = ContractsBattleConditionAddedPayloadS
 export const BattleConditionUpdatedPayload = ContractsBattleConditionUpdatedPayloadSchema;
 export const BattleConditionStruckPayload = ContractsBattleConditionStruckPayloadSchema;
 export const BattlePhaseChangedPayload = ContractsBattlePhaseChangedPayloadSchema;
+export const BattleOrchestratorSetPayload = ContractsBattleOrchestratorSetPayloadSchema;
 export const BattleDeletedPayload = ContractsBattleDeletedPayloadSchema;
 
 export const ThreadCreatedPayload = ContractsThreadCreatedPayloadSchema;

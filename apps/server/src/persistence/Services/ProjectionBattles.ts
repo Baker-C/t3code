@@ -12,6 +12,7 @@ import {
   BattlePhase,
   IsoDateTime,
   ProjectId,
+  ThreadId,
   VictoryCondition,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -29,6 +30,7 @@ export const ProjectionBattle = Schema.Struct({
   slug: Schema.String,
   phase: BattlePhase,
   victoryConditions: Schema.Array(VictoryCondition),
+  orchestratorThreadId: Schema.NullOr(ThreadId),
   defeatedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

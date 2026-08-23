@@ -238,6 +238,11 @@ interface MessagesTimelineProps {
   onManualNavigation: () => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
+  /**
+   * Content rendered at the top of the scroll container, above the transcript,
+   * so it scrolls away with it. Shown even when the thread has no messages yet.
+   */
+  header?: ReactNode;
   /** Non-null when older turns exist beyond the loaded window. */
   loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
 }
@@ -278,6 +283,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   loadEarlier = null,
+  header = null,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -555,6 +561,26 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
+    // A header outlives an empty transcript: a battle's orchestrator opens with
+    // no messages, and its battle context has to stay on screen regardless.
+    if (header !== null) {
+      return (
+        <div
+          className={cn(
+            "h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 sm:px-5",
+            topFadeEnabled && "topbar-scroll-fade",
+          )}
+          style={{ paddingBottom: contentInsetEndAdjustment }}
+        >
+          {header}
+          {hideEmptyPlaceholder ? null : (
+            <p className="text-placeholder pt-6 text-center text-sm">
+              Send a message to start the conversation.
+            </p>
+          )}
+        </div>
+      );
+    }
     if (hideEmptyPlaceholder) {
       return null;
     }
@@ -591,17 +617,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               topFadeEnabled && "topbar-scroll-fade",
             )}
             ListHeaderComponent={
-              loadEarlier !== null ? (
-                <TimelineLoadEarlierHeader
-                  loading={loadEarlier.loading}
-                  onLoadEarlier={loadEarlier.onLoadEarlier}
-                  fade={topFadeEnabled}
-                />
-              ) : topFadeEnabled ? (
-                TIMELINE_LIST_FADE_HEADER
-              ) : (
-                TIMELINE_LIST_HEADER
-              )
+              <>
+                {header}
+                {loadEarlier !== null ? (
+                  <TimelineLoadEarlierHeader
+                    loading={loadEarlier.loading}
+                    onLoadEarlier={loadEarlier.onLoadEarlier}
+                    fade={topFadeEnabled}
+                  />
+                ) : topFadeEnabled ? (
+                  TIMELINE_LIST_FADE_HEADER
+                ) : (
+                  TIMELINE_LIST_HEADER
+                )}
+              </>
             }
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />

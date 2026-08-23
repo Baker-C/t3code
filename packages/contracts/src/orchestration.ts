@@ -295,6 +295,13 @@ export const OrchestrationBattle = Schema.Struct({
   slug: TrimmedNonEmptyString,
   phase: BattlePhase,
   victoryConditions: Schema.Array(VictoryCondition),
+  // The battle's manager thread. Set once by the orchestrator reactor and never
+  // reassigned. Null only in the window between `battle.created` and the
+  // reactor landing its thread, and in snapshots written before orchestrators
+  // existed — the decoding default is what keeps those decodable.
+  orchestratorThreadId: Schema.NullOr(ThreadId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   defeatedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -842,6 +849,18 @@ const BattleDeleteCommand = Schema.Struct({
   battleId: BattleId,
 });
 
+/**
+ * Binds a battle to its manager thread. Server-only: the orchestrator reactor
+ * owns creation, so no client may name a battle's orchestrator. The decider
+ * refuses a battle that already has one, which is what keeps it exactly one.
+ */
+const BattleOrchestratorSetCommand = Schema.Struct({
+  type: Schema.Literal("battle.orchestrator.set"),
+  commandId: CommandId,
+  battleId: BattleId,
+  threadId: ThreadId,
+});
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
@@ -1250,6 +1269,7 @@ const ThreadTurnQueueUpdateCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  BattleOrchestratorSetCommand,
   ThreadTurnQueueUpdateCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -1278,6 +1298,7 @@ export const OrchestrationEventType = Schema.Literals([
   "battle.condition-updated",
   "battle.condition-struck",
   "battle.phase-changed",
+  "battle.orchestrator-set",
   "battle.deleted",
   "thread.created",
   "thread.deleted",
@@ -1399,6 +1420,14 @@ export const BattlePhaseChangedPayload = Schema.Struct({
 export const BattleDeletedPayload = Schema.Struct({
   battleId: BattleId,
   deletedAt: IsoDateTime,
+});
+
+export const BattleOrchestratorSetPayload = Schema.Struct({
+  battleId: BattleId,
+  // Deliberately not named `threadId`: the agent-awareness relay reads that key
+  // off any payload, and an orchestrator binding is not thread activity.
+  orchestratorThreadId: ThreadId,
+  updatedAt: IsoDateTime,
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
@@ -1671,6 +1700,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("battle.phase-changed"),
     payload: BattlePhaseChangedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.orchestrator-set"),
+    payload: BattleOrchestratorSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
