@@ -726,6 +726,37 @@ export function resolveThreadStatusPill(input: {
   return null;
 }
 
+/**
+ * Splits an already-sorted thread list into per-project buckets keyed by
+ * logical project key (sections inherit the input order, so a sorted input
+ * yields sorted sections). Threads whose project belongs to no group — a
+ * projection race — come back in `unassigned` so they can still render
+ * instead of silently disappearing.
+ */
+export function partitionThreadsByProjectSection<
+  T extends { readonly environmentId: string; readonly projectId: string },
+>(
+  threads: readonly T[],
+  sectionKeyByMemberKey: ReadonlyMap<string, string>,
+): { sections: Map<string, T[]>; unassigned: T[] } {
+  const sections = new Map<string, T[]>();
+  const unassigned: T[] = [];
+  for (const thread of threads) {
+    const sectionKey = sectionKeyByMemberKey.get(`${thread.environmentId}:${thread.projectId}`);
+    if (sectionKey === undefined) {
+      unassigned.push(thread);
+      continue;
+    }
+    const existing = sections.get(sectionKey);
+    if (existing) {
+      existing.push(thread);
+    } else {
+      sections.set(sectionKey, [thread]);
+    }
+  }
+  return { sections, unassigned };
+}
+
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,
 ): ThreadStatusPill | null {
