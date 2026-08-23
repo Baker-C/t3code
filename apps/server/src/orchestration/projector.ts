@@ -1,4 +1,10 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type {
+  BattleId,
+  OrchestrationBattle,
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -10,6 +16,13 @@ import * as Schema from "effect/Schema";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
+  BattleConditionAddedPayload,
+  BattleConditionStruckPayload,
+  BattleConditionUpdatedPayload,
+  BattleCreatedPayload,
+  BattleDeletedPayload,
+  BattleMetaUpdatedPayload,
+  BattlePhaseChangedPayload,
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
   ProjectDeletedPayload,
@@ -33,9 +46,12 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnQueueUpdatedPayload,
 } from "./Schemas.ts";
 
-type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
+// battleId is stamped at creation and never patched: enlistment is immutable.
+type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId" | "battleId">>;
+type BattlePatch = Partial<Omit<OrchestrationBattle, "id" | "projectId">>;
 const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 
@@ -74,6 +90,31 @@ function updateThread(
   patch: ThreadPatch,
 ): OrchestrationThread[] {
   return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+}
+
+function updateBattle(
+  battles: ReadonlyArray<OrchestrationBattle>,
+  battleId: BattleId,
+  patch: BattlePatch,
+): OrchestrationBattle[] {
+  return battles.map((battle) => (battle.id === battleId ? { ...battle, ...patch } : battle));
+}
+
+function updateBattleCondition(
+  battles: ReadonlyArray<OrchestrationBattle>,
+  battleId: BattleId,
+  conditionId: string,
+  patch: Partial<Omit<OrchestrationBattle["victoryConditions"][number], "id">>,
+  updatedAt: string,
+): OrchestrationBattle[] {
+  return updateBattle(battles, battleId, {
+    victoryConditions: (
+      battles.find((battle) => battle.id === battleId)?.victoryConditions ?? []
+    ).map((condition) =>
+      condition.id === conditionId ? { ...condition, ...patch, updatedAt } : condition,
+    ),
+    updatedAt,
+  });
 }
 
 function decodeForEvent<A>(
@@ -190,6 +231,7 @@ export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
     snapshotSequence: 0,
     projects: [],
     threads: [],
+    battles: [],
     updatedAt: nowIso,
   };
 }
@@ -278,6 +320,142 @@ export function projectEvent(
         })),
       );
 
+    case "battle.created":
+      return decodeForEvent(BattleCreatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const nextBattle: OrchestrationBattle = {
+            id: payload.battleId,
+            projectId: payload.projectId,
+            title: payload.title,
+            goal: payload.goal,
+            slug: payload.slug,
+            phase: "scoping",
+            victoryConditions: [],
+            defeatedAt: null,
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+            deletedAt: null,
+          };
+          const existing = nextBase.battles.find((entry) => entry.id === payload.battleId);
+          return {
+            ...nextBase,
+            battles: existing
+              ? nextBase.battles.map((entry) =>
+                  entry.id === payload.battleId ? nextBattle : entry,
+                )
+              : [...nextBase.battles, nextBattle],
+          };
+        }),
+      );
+
+    case "battle.meta-updated":
+      return decodeForEvent(BattleMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattle(nextBase.battles, payload.battleId, {
+            ...(payload.title !== undefined ? { title: payload.title } : {}),
+            ...(payload.goal !== undefined ? { goal: payload.goal } : {}),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "battle.condition-added":
+      return decodeForEvent(BattleConditionAddedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const battle = nextBase.battles.find((entry) => entry.id === payload.battleId);
+          if (!battle) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            battles: updateBattle(nextBase.battles, payload.battleId, {
+              victoryConditions: [
+                ...battle.victoryConditions.filter((entry) => entry.id !== payload.condition.id),
+                payload.condition,
+              ],
+              updatedAt: payload.updatedAt,
+            }),
+          };
+        }),
+      );
+
+    case "battle.condition-updated":
+      return decodeForEvent(
+        BattleConditionUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattleCondition(
+            nextBase.battles,
+            payload.battleId,
+            payload.conditionId,
+            {
+              ...(payload.title !== undefined ? { title: payload.title } : {}),
+              ...(payload.state !== undefined ? { state: payload.state } : {}),
+              ...(payload.sizeScore !== undefined ? { sizeScore: payload.sizeScore } : {}),
+              ...(payload.sizeProvisional !== undefined
+                ? { sizeProvisional: payload.sizeProvisional }
+                : {}),
+              ...(payload.ownerThreadId !== undefined
+                ? { ownerThreadId: payload.ownerThreadId }
+                : {}),
+              updatedByThreadId: payload.updatedByThreadId,
+            },
+            payload.updatedAt,
+          ),
+        })),
+      );
+
+    case "battle.condition-struck":
+      return decodeForEvent(
+        BattleConditionStruckPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattleCondition(
+            nextBase.battles,
+            payload.battleId,
+            payload.conditionId,
+            {
+              state: "descoped",
+              strikeReason: payload.strikeReason,
+              updatedByThreadId: payload.updatedByThreadId,
+            },
+            payload.updatedAt,
+          ),
+        })),
+      );
+
+    case "battle.phase-changed":
+      return decodeForEvent(BattlePhaseChangedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattle(nextBase.battles, payload.battleId, {
+            phase: payload.phase,
+            defeatedAt: payload.defeatedAt,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "battle.deleted":
+      return decodeForEvent(BattleDeletedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattle(nextBase.battles, payload.battleId, {
+            deletedAt: payload.deletedAt,
+            updatedAt: payload.deletedAt,
+          }),
+        })),
+      );
+
     case "thread.created":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -291,6 +469,7 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            battleId: payload.battleId ?? null,
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
@@ -322,6 +501,22 @@ export function projectEvent(
             : [...nextBase.threads, thread],
         };
       });
+
+    case "thread.turn-queue-updated":
+      return decodeForEvent(
+        ThreadTurnQueueUpdatedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            turnQueued: payload.turnQueued,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
 
     case "thread.deleted":
       return decodeForEvent(ThreadDeletedPayload, event.payload, event.type, "payload").pipe(

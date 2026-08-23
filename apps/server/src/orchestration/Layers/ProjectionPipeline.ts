@@ -15,6 +15,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ProjectionBattleRepository } from "../../persistence/Services/ProjectionBattles.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
@@ -34,6 +35,7 @@ import {
   ProjectionTurnRepository,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProjectionBattleRepositoryLive } from "../../persistence/Layers/ProjectionBattles.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -57,6 +59,7 @@ import {
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
+  battles: "projection.battles",
   threads: "projection.threads",
   threadMessages: "projection.thread-messages",
   threadProposedPlans: "projection.thread-proposed-plans",
@@ -473,6 +476,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
+    const projectionBattleRepository = yield* ProjectionBattleRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
@@ -552,6 +556,163 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    const applyBattlesProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyBattlesProjection",
+    )(function* (event, _attachmentSideEffects) {
+      switch (event.type) {
+        case "battle.created":
+          yield* projectionBattleRepository.upsert({
+            battleId: event.payload.battleId,
+            projectId: event.payload.projectId,
+            title: event.payload.title,
+            goal: event.payload.goal,
+            slug: event.payload.slug,
+            phase: "scoping",
+            victoryConditions: [],
+            defeatedAt: null,
+            createdAt: event.payload.createdAt,
+            updatedAt: event.payload.updatedAt,
+            deletedAt: null,
+          });
+          return;
+
+        case "battle.meta-updated": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.goal !== undefined ? { goal: event.payload.goal } : {}),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.condition-added": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            victoryConditions: [
+              ...existingRow.value.victoryConditions.filter(
+                (condition) => condition.id !== event.payload.condition.id,
+              ),
+              event.payload.condition,
+            ],
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.condition-updated": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const conditionUpdate = event.payload;
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            victoryConditions: existingRow.value.victoryConditions.map((condition) =>
+              condition.id === conditionUpdate.conditionId
+                ? {
+                    ...condition,
+                    ...(conditionUpdate.title !== undefined
+                      ? { title: conditionUpdate.title }
+                      : {}),
+                    ...(conditionUpdate.state !== undefined
+                      ? { state: conditionUpdate.state }
+                      : {}),
+                    ...(conditionUpdate.sizeScore !== undefined
+                      ? { sizeScore: conditionUpdate.sizeScore }
+                      : {}),
+                    ...(conditionUpdate.sizeProvisional !== undefined
+                      ? { sizeProvisional: conditionUpdate.sizeProvisional }
+                      : {}),
+                    ...(conditionUpdate.ownerThreadId !== undefined
+                      ? { ownerThreadId: conditionUpdate.ownerThreadId }
+                      : {}),
+                    updatedByThreadId: conditionUpdate.updatedByThreadId,
+                    updatedAt: conditionUpdate.updatedAt,
+                  }
+                : condition,
+            ),
+            updatedAt: conditionUpdate.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.condition-struck": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const strike = event.payload;
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            victoryConditions: existingRow.value.victoryConditions.map((condition) =>
+              condition.id === strike.conditionId
+                ? {
+                    ...condition,
+                    state: "descoped" as const,
+                    strikeReason: strike.strikeReason,
+                    updatedByThreadId: strike.updatedByThreadId,
+                    updatedAt: strike.updatedAt,
+                  }
+                : condition,
+            ),
+            updatedAt: strike.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.phase-changed": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            phase: event.payload.phase,
+            defeatedAt: event.payload.defeatedAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.deleted": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            deletedAt: event.payload.deletedAt,
+            updatedAt: event.payload.deletedAt,
+          });
+          return;
+        }
+
+        default:
+          return;
+      }
+    });
+
     const refreshThreadShellSummary = Effect.fn("refreshThreadShellSummary")(function* (
       threadId: ThreadId,
     ) {
@@ -605,6 +766,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            battleId: event.payload.battleId ?? null,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -623,6 +785,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinOrderKey: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
+            turnQueued: 0,
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
@@ -630,6 +793,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             deletedAt: null,
           });
           return;
+
+        case "thread.turn-queue-updated": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            turnQueued: event.payload.turnQueued ? 1 : 0,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
 
         case "thread.archived": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -1612,6 +1790,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         apply: applyProjectsProjection,
       },
       {
+        name: ORCHESTRATION_PROJECTOR_NAMES.battles,
+        apply: applyBattlesProjection,
+      },
+      {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
         apply: applyThreadMessagesProjection,
       },
@@ -1738,6 +1920,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   makeOrchestrationProjectionPipeline(),
 ).pipe(
   Layer.provideMerge(ProjectionProjectRepositoryLive),
+  Layer.provideMerge(ProjectionBattleRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),

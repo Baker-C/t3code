@@ -9,6 +9,7 @@ This is a living glossary for T3 Code. It explains what common terms mean in thi
 - [Project and workspace](#project-and-workspace)
 - [Thread timeline](#thread-timeline)
 - [Orchestration](#orchestration)
+- [Battles](#battles)
 - [Provider runtime](#provider-runtime)
 - [Checkpointing](#checkpointing)
 
@@ -48,7 +49,7 @@ Orchestration is the server-side domain layer that turns runtime activity into s
 
 #### Aggregate
 
-The domain object a command or event belongs to. In [the contracts][1], that is usually `project` or `thread`. See [decider.ts][8].
+The domain object a command or event belongs to. In [the contracts][1], that is `project`, `thread`, or `battle`. See [decider.ts][8].
 
 #### Command
 
@@ -87,6 +88,32 @@ A typed signal emitted when an async milestone completes, such as `checkpoint.ba
 #### Quiesced
 
 "Quiesced" means a turn has gone quiet and stable: follow-up work such as [CheckpointReactor.ts][6] has settled. It appears in [the receipt schema][13], so in practice it is something tests wait on rather than a production signal.
+
+### Battles
+
+Battles group threads under one goal. The aggregate lives beside `project` and `thread` in [the contracts][1], with commands decided in [decider.ts][8] and folded into the read model by [projector.ts][4]. See [the user-facing page][25].
+
+#### Battle
+
+An orchestration aggregate holding a goal, a list of victory conditions, and a phase. It owns no branch and no worktree: membership lives on the thread's immutable `battleId`, so one battle can span several worktrees (a frontend and a backend checkout inside one project) and several threads can share one. Preconditions are in [commandInvariants.ts][9]; the projection row is written by [ProjectionPipeline.ts][11] through [ProjectionBattles.ts][26].
+
+A battle carries an immutable `slug`, derived from its title once at creation in [decider.ts][8]. Battle-derived branch names are built from the stored slug, so renaming a battle never drifts the branches its threads already sit on.
+
+#### Victory condition
+
+A unit of battle scope, not of completion: it is met once its plan is pinned (`scoped`), before any implementation lands. In [the contracts][1] the states are `unscoped`, `scoping`, `scoped`, and `descoped`. Conditions are stored inline on the battle rather than as their own aggregate — the list is small and is always read with its battle. Each carries `updatedByThreadId`, the thread whose agent or user last changed it, which is how MCP edits stay attributable. See [the battle toolkit handlers][27].
+
+#### Battle lines drawn
+
+Derived state, not a stored phase: every condition is resolved (`scoped` or `descoped`) and at least one survived. The helper is `battleLinesDrawn` in [the contracts][1], shared by the server and the clients. Entering the `fighting` phase is an explicit `battle.declare-fighting` command guarded by it, so a battle whose conditions were all struck can never start fighting.
+
+#### Defeated
+
+The terminal battle phase, entered by `battle.declare-defeat`. The event carries the user's explicit `retireWorktrees` choice — the server never guesses which worktrees to remove — and a `defeatedAt` stamp. `battle.reopen` returns the battle to `fighting` and clears both. Reopening is lazy: nothing is re-provisioned until a member thread next starts a turn. See [decider.ts][8].
+
+#### TurnGate
+
+Per-key mutual exclusion for provider turns, in [TurnGate.ts][28]. The key is the thread's resolved working directory (`worktreePath`, else the project's workspace root), **not** the battle id: two battle threads in different worktrees run concurrently, while two threads sharing one worktree serialize even across battles. The permit is held for the whole turn fiber and released on completion, failure, or interruption. Waiting threads surface as `thread.turnQueued` in the read model. Whether a cwd is shared is answered by [SharedWorktree.ts][29], which also drives the shared-cwd checkpoint policy: pre-turn refs, pre→post turn diffs, and a revert guard.
 
 ### Provider runtime
 
@@ -147,6 +174,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 - If you see `receipt`, think "async milestone signal, for tests".
 - If you see `checkpoint`, think "workspace snapshot for diff/restore".
 - If you see `quiesced`, think "all relevant follow-up work has gone idle".
+- If you see `scoped`, think "the plan is pinned", not "the work is finished".
 
 ## Related Docs
 
@@ -179,3 +207,8 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../../apps/server/src/checkpointing/Utils.ts
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
+[25]: ../user/battles.md
+[26]: ../../apps/server/src/persistence/Layers/ProjectionBattles.ts
+[27]: ../../apps/server/src/mcp/toolkits/battle/handlers.ts
+[28]: ../../apps/server/src/provider/TurnGate.ts
+[29]: ../../apps/server/src/checkpointing/SharedWorktree.ts

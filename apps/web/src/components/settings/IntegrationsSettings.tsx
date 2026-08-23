@@ -393,6 +393,40 @@ function AgentBrowserAccessSetting() {
   );
 }
 
+function BattleToolsSetting() {
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("battle-tools")}
+      description="Let agents update the victory conditions of the battle they work in. When off, the battle tools and the instructions describing them are withheld from agent sessions. You can still edit conditions yourself."
+      status={
+        settings.enableBattleTools
+          ? "Applies to sessions started from now on; a running agent keeps the tools it was given."
+          : undefined
+      }
+      resetAction={
+        settings.enableBattleTools !== DEFAULT_UNIFIED_SETTINGS.enableBattleTools ? (
+          <SettingResetButton
+            label="battle tools"
+            onClick={() =>
+              updateSettings({ enableBattleTools: DEFAULT_UNIFIED_SETTINGS.enableBattleTools })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.enableBattleTools}
+          onCheckedChange={(checked) => updateSettings({ enableBattleTools: Boolean(checked) })}
+          aria-label="Allow agent battle tools"
+        />
+      }
+    />
+  );
+}
+
 function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled: boolean }) {
   const autoShow = useClientSettings((settings) => settings.browserAutoShowFloatingPreview);
   const updateSettings = useUpdatePrimarySettings();
@@ -476,6 +510,9 @@ export function IntegrationsSettingsPanel() {
         ) : (
           previewDefaults
         )}
+      </SettingsSection>
+      <SettingsSection id="battles" title="Battles">
+        <BattleToolsSetting />
       </SettingsSection>
     </SettingsPageContainer>
   );

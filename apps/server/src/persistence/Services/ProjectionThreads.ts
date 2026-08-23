@@ -7,6 +7,7 @@
  * @module ProjectionThreadRepository
  */
 import {
+  BattleId,
   CommandId,
   IsoDateTime,
   ModelSelection,
@@ -27,6 +28,8 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  // Stamped at creation and never patched; null for threads outside a battle.
+  battleId: Schema.optional(Schema.NullOr(BattleId)),
   title: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -45,6 +48,8 @@ export const ProjectionThread = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(Schema.String)),
   titleRegenerationRequestId: Schema.optional(Schema.NullOr(CommandId)),
   titleRegenerationStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // 1 while the thread's turn waits for another thread to release its worktree.
+  turnQueued: Schema.optional(NonNegativeInt),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,

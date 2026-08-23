@@ -7,7 +7,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview";
+export type McpCapability = "preview" | "battle";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
@@ -23,8 +23,13 @@ export class McpInvocationContext extends Context.Service<
   McpInvocationScope
 >()("t3/mcp/McpInvocationContext") {}
 
+/**
+ * Guards the preview toolkit. Only the preview capability is checked here
+ * because the refusal error pins `capability` to `"preview"` in contracts;
+ * other capabilities refuse with their own toolkit-local error.
+ */
 export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function* (
-  capability: McpCapability,
+  capability: "preview",
 ) {
   const invocation = yield* McpInvocationContext;
   if (!invocation.capabilities.has(capability)) {

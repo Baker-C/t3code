@@ -4,10 +4,13 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpServer } from "effect/unstable/http";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
 
@@ -95,6 +98,8 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const livenessWindowMs = options.livenessWindowMs ?? DEFAULT_LIVENESS_WINDOW_MS;
@@ -117,9 +122,54 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     return next.size === records.size ? records : next;
   };
 
+  /**
+   * Which toolkits this credential unlocks. Both answers default to "no" when
+   * settings are unreadable, for the same reason `ProviderService` denies on
+   * that path: an explicit opt-out must never turn itself back on, and the
+   * reverse costs an agent one toolset and shows up immediately.
+   *
+   * The battle toolkit additionally requires the thread to be in a battle.
+   * `battleId` is immutable at creation, so a credential minted for a
+   * battle-less thread can never become wrongly capable later.
+   */
+  const resolveCapabilities = Effect.fn("McpSessionRegistry.resolveCapabilities")(function* (
+    threadId: ThreadId,
+  ) {
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning(
+          "Could not read server settings; issuing an MCP credential with no capabilities.",
+          { cause },
+        ).pipe(Effect.as(undefined)),
+      ),
+    );
+    const capabilities = new Set<McpInvocationContext.McpCapability>();
+    if (settings?.enableAgentBrowserAccess === true) {
+      capabilities.add("preview");
+    }
+    if (settings?.enableBattleTools === true) {
+      const thread = yield* projectionSnapshotQuery
+        .getThreadShellById(threadId)
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning(
+              "Could not read the thread while issuing an MCP credential; withholding battle tools.",
+              { cause, threadId },
+            ).pipe(Effect.as(Option.none())),
+          ),
+        );
+      const battleId = Option.getOrUndefined(thread)?.battleId;
+      if (battleId != null) {
+        capabilities.add("battle");
+      }
+    }
+    return capabilities;
+  });
+
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
+      const capabilities = yield* resolveCapabilities(request.threadId);
       const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
@@ -128,7 +178,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview"]),
+        capabilities,
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
@@ -144,6 +194,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: scope.providerInstanceId,
           endpoint,
           authorizationHeader: `Bearer ${rawToken}`,
+          capabilities: Array.from(capabilities),
         },
       };
     },

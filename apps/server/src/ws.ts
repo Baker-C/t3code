@@ -15,6 +15,7 @@ import {
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
   AuthSessionId,
+  BattleId,
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
@@ -59,6 +60,8 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -96,6 +99,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
+import * as RepoRoots from "./git/RepoRoots.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -364,6 +368,8 @@ const makeWsRpcLayer = (
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const remoteOpenTargets = yield* RemoteOpenTargets.RemoteOpenTargets;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const pathService = yield* Path.Path;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -569,7 +575,18 @@ const makeWsRpcLayer = (
             );
           case "thread.unarchived":
             return threadUpsertOrRemove(event.payload.threadId, event.sequence);
+          case "battle.deleted":
+            return Effect.succeed(
+              Option.some({
+                kind: "battle-removed" as const,
+                sequence: event.sequence,
+                battleId: event.payload.battleId,
+              }),
+            );
           default:
+            if (event.aggregateKind === "battle") {
+              return battleUpsertOrRemove(BattleId.make(event.aggregateId), event.sequence);
+            }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
             }
@@ -583,7 +600,7 @@ const makeWsRpcLayer = (
       // If both attempts fail, log and drop the stream item; treating an error as
       // a missing row would incorrectly remove a still-active aggregate.
       const retryShellProjectionRead = <A, E>(
-        aggregateKind: "project" | "thread",
+        aggregateKind: "project" | "thread" | "battle",
         aggregateId: string,
         read: Effect.Effect<A, E>,
       ): Effect.Effect<Option.Option<A>, never, never> =>
@@ -623,6 +640,35 @@ const makeWsRpcLayer = (
                     kind: "project-upserted" as const,
                     sequence,
                     project: nextProject,
+                  }),
+              }),
+            ),
+          ),
+        );
+
+      const battleUpsertOrRemove = (
+        battleId: BattleId,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        retryShellProjectionRead(
+          "battle",
+          battleId,
+          projectionSnapshotQuery.getBattleById(battleId),
+        ).pipe(
+          Effect.map(
+            Option.flatMap((battle) =>
+              Option.match(battle, {
+                onNone: () =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "battle-removed" as const,
+                    sequence,
+                    battleId,
+                  }),
+                onSome: (nextBattle) =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "battle-upserted" as const,
+                    sequence,
+                    battle: nextBattle,
                   }),
               }),
             ),
@@ -894,6 +940,45 @@ const makeWsRpcLayer = (
                 );
             });
 
+          // Battle threads get server-named branches derived from the
+          // battle's immutable slug, so shared worktrees never carry
+          // temporary hex names and clients never invent naming policy.
+          const resolveBattleWorktreeBranch = (input: { readonly projectCwd: string }) =>
+            Effect.gen(function* () {
+              const battleId =
+                bootstrap?.createThread?.battleId ??
+                (yield* projectionSnapshotQuery
+                  .getThreadShellById(command.threadId)
+                  .pipe(
+                    Effect.map(
+                      Option.match({ onNone: () => null, onSome: (t) => t.battleId ?? null }),
+                    ),
+                  ));
+              if (!battleId) {
+                return undefined;
+              }
+              const battle = yield* projectionSnapshotQuery.getBattleById(battleId);
+              if (Option.isNone(battle)) {
+                return undefined;
+              }
+              const baseName = `battle/${battle.value.slug}`;
+              const existing = yield* gitWorkflow.listRefs({
+                cwd: input.projectCwd,
+                query: baseName,
+                refKind: "local",
+              });
+              const taken = new Set(existing.refs.map((ref) => ref.name));
+              if (!taken.has(baseName)) {
+                return baseName;
+              }
+              for (let suffix = 2; ; suffix += 1) {
+                const candidate = `${baseName}-${suffix}`;
+                if (!taken.has(candidate)) {
+                  return candidate;
+                }
+              }
+            });
+
           const bootstrapProgram = Effect.gen(function* () {
             if (bootstrap?.createThread) {
               yield* orchestrationEngine.dispatch({
@@ -901,6 +986,9 @@ const makeWsRpcLayer = (
                 commandId: yield* serverCommandId("bootstrap-thread-create"),
                 threadId: command.threadId,
                 projectId: bootstrap.createThread.projectId,
+                ...(bootstrap.createThread.battleId !== undefined
+                  ? { battleId: bootstrap.createThread.battleId }
+                  : {}),
                 title: bootstrap.createThread.title,
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,
@@ -935,10 +1023,15 @@ const makeWsRpcLayer = (
                 });
                 worktreeBaseRef = resolvedRemoteBase.commitSha;
               }
+              const newRefName =
+                bootstrap.prepareWorktree.branch ??
+                (yield* resolveBattleWorktreeBranch({
+                  projectCwd: bootstrap.prepareWorktree.projectCwd,
+                }));
               const worktree = yield* gitWorkflow.createWorktree({
                 cwd: bootstrap.prepareWorktree.projectCwd,
                 refName: worktreeBaseRef,
-                newRefName: bootstrap.prepareWorktree.branch,
+                ...(newRefName !== undefined ? { newRefName } : {}),
                 baseRefName: bootstrap.prepareWorktree.baseBranch,
                 path: null,
               });
@@ -1163,7 +1256,13 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetFullThreadDiffError({
-                    message: "Failed to load full thread diff",
+                    // Shared-worktree refusal is an explanation, not a
+                    // failure — surface its message so the client can say
+                    // "use per-turn diffs" instead of a generic error.
+                    message:
+                      cause._tag === "CheckpointSharedWorktreeDiffUnavailableError"
+                        ? cause.message
+                        : "Failed to load full thread diff",
                     cause,
                   }),
               ),
@@ -1997,6 +2096,15 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.vcsListRefs, gitWorkflow.listRefs(input), {
             "rpc.aggregate": "vcs",
           }),
+        [WS_METHODS.vcsListRepoRoots]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsListRepoRoots,
+            RepoRoots.listRepoRoots(input).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, pathService),
+            ),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,

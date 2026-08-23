@@ -33,6 +33,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         INSERT INTO projection_threads (
           thread_id,
           project_id,
+          battle_id,
           title,
           model_selection_json,
           runtime_mode,
@@ -51,6 +52,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pin_order_key,
           title_regeneration_request_id,
           title_regeneration_started_at,
+          turn_queued,
           latest_user_message_at,
           pending_approval_count,
           pending_user_input_count,
@@ -60,6 +62,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         VALUES (
           ${row.threadId},
           ${row.projectId},
+          ${row.battleId ?? null},
           ${row.title},
           ${JSON.stringify(row.modelSelection)},
           ${row.runtimeMode},
@@ -78,6 +81,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.pinOrderKey ?? null},
           ${row.titleRegenerationRequestId ?? null},
           ${row.titleRegenerationStartedAt ?? null},
+          ${row.turnQueued ?? 0},
           ${row.latestUserMessageAt},
           ${row.pendingApprovalCount},
           ${row.pendingUserInputCount},
@@ -87,6 +91,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           project_id = excluded.project_id,
+          battle_id = excluded.battle_id,
           title = excluded.title,
           model_selection_json = excluded.model_selection_json,
           runtime_mode = excluded.runtime_mode,
@@ -105,6 +110,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pin_order_key = excluded.pin_order_key,
           title_regeneration_request_id = excluded.title_regeneration_request_id,
           title_regeneration_started_at = excluded.title_regeneration_started_at,
+          turn_queued = excluded.turn_queued,
           latest_user_message_at = excluded.latest_user_message_at,
           pending_approval_count = excluded.pending_approval_count,
           pending_user_input_count = excluded.pending_user_input_count,
@@ -121,6 +127,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          battle_id AS "battleId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -139,6 +146,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          turn_queued AS "turnQueued",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
@@ -157,6 +165,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          battle_id AS "battleId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
@@ -175,6 +184,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
+          turn_queued AS "turnQueued",
           latest_user_message_at AS "latestUserMessageAt",
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",

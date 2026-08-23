@@ -236,9 +236,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * Attach the `t3-code` MCP server to the session that is about to start.
    *
    * This is the only place a credential is minted, so withholding one here is
-   * what disables agent browser access everywhere: every adapter already
-   * treats a missing session as "no MCP server", and the `/mcp` endpoint
-   * accepts nothing but tokens issued from this path.
+   * what disables agent MCP access everywhere: every adapter already treats a
+   * missing session as "no MCP server", and the `/mcp` endpoint accepts
+   * nothing but tokens issued from this path. Which toolkits an issued
+   * credential actually unlocks is the registry's call — the server is
+   * attached whenever either toolset is enabled.
    */
   /**
    * Deny on an unreadable settings file rather than letting the read failure
@@ -248,19 +250,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    * "off" silently becoming "on" would violate the user's stated choice,
    * whereas the reverse costs an agent one toolset and is visible immediately.
    */
-  const agentBrowserAccessEnabled = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.enableAgentBrowserAccess),
+  const mcpToolsEnabled = serverSettings.getSettings.pipe(
+    Effect.map((settings) => settings.enableAgentBrowserAccess || settings.enableBattleTools),
     Effect.catch((cause) =>
-      Effect.logWarning(
-        "Could not read server settings; withholding agent browser access for this session.",
-        { cause },
-      ).pipe(Effect.as(false)),
+      Effect.logWarning("Could not read server settings; withholding MCP tools for this session.", {
+        cause,
+      }).pipe(Effect.as(false)),
     ),
   );
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
-      if (!(yield* agentBrowserAccessEnabled)) {
+      if (!(yield* mcpToolsEnabled)) {
         // Revoke as well as clear. Every other prepare path reaches
         // `issueActiveMcpCredential`, which revokes the thread first, so
         // skipping it here would leave a previously issued bearer token valid

@@ -204,6 +204,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "browser",
   },
   {
+    id: "battle-tools",
+    title: "Battle tools",
+    to: "/settings/integrations",
+    targetId: "battles",
+  },
+  {
     id: "browser-default-viewport",
     title: "Default browser viewport",
     to: "/settings/integrations",

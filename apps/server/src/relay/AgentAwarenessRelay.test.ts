@@ -482,6 +482,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             Effect.succeed({
               snapshotSequence: 1,
               projects: [project],
+              battles: [],
               threads: [thread],
               updatedAt: now,
             } satisfies OrchestrationShellSnapshot),
@@ -491,6 +492,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
               Effect.as(Option.some(thread)),
             ),
           getProjectShellById: () => Effect.succeed(Option.some(project)),
+          getBattleById: () => Effect.succeed(Option.none()),
         } as unknown as ProjectionSnapshotQueryShape;
 
         const descriptor = {
@@ -673,11 +675,13 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
               Effect.succeed({
                 snapshotSequence: 1,
                 projects: [project],
+                battles: [],
                 threads: [thread],
                 updatedAt: now,
               } satisfies OrchestrationShellSnapshot),
             getThreadShellById: () => Effect.succeed(Option.some(thread)),
             getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getBattleById: () => Effect.succeed(Option.none()),
           } as unknown as ProjectionSnapshotQueryShape),
         );
 

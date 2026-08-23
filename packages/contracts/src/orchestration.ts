@@ -7,6 +7,7 @@ import { ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
+  BattleId,
   CheckpointRef,
   CommandId,
   EventId,
@@ -20,6 +21,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
   TurnId,
+  VictoryConditionId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -249,6 +251,75 @@ export const OrchestrationProject = Schema.Struct({
 });
 export type OrchestrationProject = typeof OrchestrationProject.Type;
 
+/**
+ * A victory condition is a unit of battle scope, not of completion: it is
+ * "met" once its plan is pinned ("scoped"), before any implementation lands.
+ * Struck conditions stay in the record as descoped rather than disappearing.
+ */
+export const VictoryConditionState = Schema.Literals(["unscoped", "scoping", "scoped", "descoped"]);
+export type VictoryConditionState = typeof VictoryConditionState.Type;
+
+export const VictoryConditionSizeScore = Schema.Literals([0, 1, 2, 3, 4, 5]);
+export type VictoryConditionSizeScore = typeof VictoryConditionSizeScore.Type;
+
+export const VictoryCondition = Schema.Struct({
+  id: VictoryConditionId,
+  title: TrimmedNonEmptyString,
+  state: VictoryConditionState,
+  sizeScore: Schema.NullOr(VictoryConditionSizeScore),
+  // A provisional score is an estimate made before scoping finished.
+  sizeProvisional: Schema.Boolean,
+  ownerThreadId: Schema.NullOr(ThreadId),
+  strikeReason: Schema.NullOr(TrimmedNonEmptyString),
+  // The thread whose agent (or user) last mutated this condition.
+  updatedByThreadId: Schema.NullOr(ThreadId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type VictoryCondition = typeof VictoryCondition.Type;
+
+export const BattlePhase = Schema.Literals(["scoping", "fighting", "defeated"]);
+export type BattlePhase = typeof BattlePhase.Type;
+
+/**
+ * A battle groups N threads under one goal. It owns no branch or worktree —
+ * worktrees stay thread-owned and one battle may span several (e.g. separate
+ * frontend and backend repos inside one project folder). The immutable slug
+ * seeds battle-derived branch names so renaming the battle never drifts them.
+ */
+export const OrchestrationBattle = Schema.Struct({
+  id: BattleId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  goal: Schema.NullOr(TrimmedNonEmptyString),
+  slug: TrimmedNonEmptyString,
+  phase: BattlePhase,
+  victoryConditions: Schema.Array(VictoryCondition),
+  defeatedAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  deletedAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationBattle = typeof OrchestrationBattle.Type;
+
+/**
+ * "Battle lines drawn": every condition is resolved (scoped or descoped) and
+ * at least one survived. The battle is fully planned but not yet won —
+ * entering the "fighting" phase is guarded by this.
+ */
+export const battleLinesDrawn = (battle: {
+  readonly victoryConditions: ReadonlyArray<{ readonly state: VictoryConditionState }>;
+}): boolean => {
+  const conditions = battle.victoryConditions;
+  if (conditions.length === 0) return false;
+  let scoped = 0;
+  for (const condition of conditions) {
+    if (condition.state === "scoped") scoped += 1;
+    else if (condition.state !== "descoped") return false;
+  }
+  return scoped > 0;
+};
+
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
@@ -378,6 +449,10 @@ export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  // Immutable at creation, like projectId. Absent = an implicit
+  // single-thread battle; the thread renders and behaves exactly as before
+  // battles existed. Optional so pre-battle snapshots still decode.
+  battleId: Schema.optional(Schema.NullOr(BattleId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -411,6 +486,9 @@ export const OrchestrationThread = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  // True while this thread's turn waits for another thread to release the
+  // shared worktree. Optional so pre-battle payloads still decode.
+  turnQueued: Schema.optional(Schema.Boolean),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -426,6 +504,7 @@ export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
+  battles: Schema.Array(OrchestrationBattle).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
@@ -448,6 +527,8 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  // Immutable at creation; absent = implicit single-thread battle.
+  battleId: Schema.optional(Schema.NullOr(BattleId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -469,6 +550,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  // True while this thread's turn waits for the shared worktree.
+  turnQueued: Schema.optional(Schema.Boolean),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -501,6 +584,9 @@ export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
+  // Battles are small (conditions inline, no messages), so the shell carries
+  // the full entity. Decoding default keeps pre-battle snapshots valid.
+  battles: Schema.Array(OrchestrationBattle).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
@@ -525,6 +611,16 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     kind: Schema.Literal("thread-removed"),
     sequence: NonNegativeInt,
     threadId: ThreadId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("battle-upserted"),
+    sequence: NonNegativeInt,
+    battle: OrchestrationBattle,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("battle-removed"),
+    sequence: NonNegativeInt,
+    battleId: BattleId,
   }),
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
@@ -664,11 +760,95 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
+export const BattleCreateCommand = Schema.Struct({
+  type: Schema.Literal("battle.create"),
+  commandId: CommandId,
+  battleId: BattleId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  goal: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  createdAt: IsoDateTime,
+});
+
+const BattleMetaUpdateCommand = Schema.Struct({
+  type: Schema.Literal("battle.meta.update"),
+  commandId: CommandId,
+  battleId: BattleId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  // Absent = leave unchanged; null = clear.
+  goal: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+});
+
+const BattleConditionAddCommand = Schema.Struct({
+  type: Schema.Literal("battle.condition.add"),
+  commandId: CommandId,
+  battleId: BattleId,
+  conditionId: VictoryConditionId,
+  title: TrimmedNonEmptyString,
+  state: Schema.optional(VictoryConditionState),
+  sizeScore: Schema.optional(Schema.NullOr(VictoryConditionSizeScore)),
+  sizeProvisional: Schema.optional(Schema.Boolean),
+  ownerThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  // Attribution for agent-made changes (MCP handlers stamp the calling thread).
+  updatedByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+});
+
+const BattleConditionUpdateCommand = Schema.Struct({
+  type: Schema.Literal("battle.condition.update"),
+  commandId: CommandId,
+  battleId: BattleId,
+  conditionId: VictoryConditionId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  state: Schema.optional(VictoryConditionState),
+  sizeScore: Schema.optional(Schema.NullOr(VictoryConditionSizeScore)),
+  sizeProvisional: Schema.optional(Schema.Boolean),
+  ownerThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  updatedByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+});
+
+const BattleConditionStrikeCommand = Schema.Struct({
+  type: Schema.Literal("battle.condition.strike"),
+  commandId: CommandId,
+  battleId: BattleId,
+  conditionId: VictoryConditionId,
+  strikeReason: TrimmedNonEmptyString,
+  updatedByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+});
+
+const BattleDeclareFightingCommand = Schema.Struct({
+  type: Schema.Literal("battle.declare-fighting"),
+  commandId: CommandId,
+  battleId: BattleId,
+});
+
+const BattleDeclareDefeatCommand = Schema.Struct({
+  type: Schema.Literal("battle.declare-defeat"),
+  commandId: CommandId,
+  battleId: BattleId,
+  // The user's explicit choice from the confirm dialog; the server never
+  // guesses which worktrees to remove.
+  retireWorktrees: Schema.Boolean,
+});
+
+const BattleReopenCommand = Schema.Struct({
+  type: Schema.Literal("battle.reopen"),
+  commandId: CommandId,
+  battleId: BattleId,
+});
+
+const BattleDeleteCommand = Schema.Struct({
+  type: Schema.Literal("battle.delete"),
+  commandId: CommandId,
+  battleId: BattleId,
+});
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  // Enlists the thread in a battle at creation. Immutable afterwards.
+  battleId: Schema.optional(Schema.NullOr(BattleId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -798,6 +978,10 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
+  // Enlists the created thread in a battle. When set and prepareWorktree
+  // carries no branch, the server names the worktree branch from the
+  // battle's slug.
+  battleId: Schema.optional(Schema.NullOr(BattleId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -913,6 +1097,15 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
+  BattleCreateCommand,
+  BattleMetaUpdateCommand,
+  BattleConditionAddCommand,
+  BattleConditionUpdateCommand,
+  BattleConditionStrikeCommand,
+  BattleDeclareFightingCommand,
+  BattleDeclareDefeatCommand,
+  BattleReopenCommand,
+  BattleDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -941,6 +1134,15 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
+  BattleCreateCommand,
+  BattleMetaUpdateCommand,
+  BattleConditionAddCommand,
+  BattleConditionUpdateCommand,
+  BattleConditionStrikeCommand,
+  BattleDeclareFightingCommand,
+  BattleDeclareDefeatCommand,
+  BattleReopenCommand,
+  BattleDeleteCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1037,7 +1239,18 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
 });
 
+const ThreadTurnQueueUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn-queue.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  // True while the thread's turn waits for its shared worktree; the TurnGate
+  // dispatches this on wait-entry and permit acquisition.
+  turnQueued: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadTurnQueueUpdateCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -1059,6 +1272,13 @@ export const OrchestrationEventType = Schema.Literals([
   "project.created",
   "project.meta-updated",
   "project.deleted",
+  "battle.created",
+  "battle.meta-updated",
+  "battle.condition-added",
+  "battle.condition-updated",
+  "battle.condition-struck",
+  "battle.phase-changed",
+  "battle.deleted",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -1085,10 +1305,11 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.turn-queue-updated",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
-export const OrchestrationAggregateKind = Schema.Literals(["project", "thread"]);
+export const OrchestrationAggregateKind = Schema.Literals(["project", "thread", "battle"]);
 export type OrchestrationAggregateKind = typeof OrchestrationAggregateKind.Type;
 export const OrchestrationActorKind = Schema.Literals(["client", "server", "provider"]);
 
@@ -1122,9 +1343,68 @@ export const ProjectDeletedPayload = Schema.Struct({
   deletedAt: IsoDateTime,
 });
 
+export const BattleCreatedPayload = Schema.Struct({
+  battleId: BattleId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  goal: Schema.NullOr(TrimmedNonEmptyString),
+  slug: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const BattleMetaUpdatedPayload = Schema.Struct({
+  battleId: BattleId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  goal: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  updatedAt: IsoDateTime,
+});
+
+export const BattleConditionAddedPayload = Schema.Struct({
+  battleId: BattleId,
+  condition: VictoryCondition,
+  updatedAt: IsoDateTime,
+});
+
+export const BattleConditionUpdatedPayload = Schema.Struct({
+  battleId: BattleId,
+  conditionId: VictoryConditionId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  state: Schema.optional(VictoryConditionState),
+  sizeScore: Schema.optional(Schema.NullOr(VictoryConditionSizeScore)),
+  sizeProvisional: Schema.optional(Schema.Boolean),
+  ownerThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  updatedByThreadId: Schema.NullOr(ThreadId),
+  updatedAt: IsoDateTime,
+});
+
+export const BattleConditionStruckPayload = Schema.Struct({
+  battleId: BattleId,
+  conditionId: VictoryConditionId,
+  strikeReason: TrimmedNonEmptyString,
+  updatedByThreadId: Schema.NullOr(ThreadId),
+  updatedAt: IsoDateTime,
+});
+
+export const BattlePhaseChangedPayload = Schema.Struct({
+  battleId: BattleId,
+  phase: BattlePhase,
+  // Present when entering "defeated"; carries the user's retirement choice
+  // for the retirement reactor. Null on other transitions.
+  retireWorktrees: Schema.NullOr(Schema.Boolean),
+  defeatedAt: Schema.NullOr(IsoDateTime),
+  updatedAt: IsoDateTime,
+});
+
+export const BattleDeletedPayload = Schema.Struct({
+  battleId: BattleId,
+  deletedAt: IsoDateTime,
+});
+
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  battleId: Schema.optional(Schema.NullOr(BattleId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1140,6 +1420,12 @@ export const ThreadCreatedPayload = Schema.Struct({
 export const ThreadDeletedPayload = Schema.Struct({
   threadId: ThreadId,
   deletedAt: IsoDateTime,
+});
+
+export const ThreadTurnQueueUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnQueued: Schema.Boolean,
+  updatedAt: IsoDateTime,
 });
 
 export const ThreadArchivedPayload = Schema.Struct({
@@ -1332,7 +1618,7 @@ const EventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  aggregateId: Schema.Union([ProjectId, ThreadId]),
+  aggregateId: Schema.Union([ProjectId, ThreadId, BattleId]),
   occurredAt: IsoDateTime,
   commandId: Schema.NullOr(CommandId),
   causationEventId: Schema.NullOr(EventId),
@@ -1355,6 +1641,41 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("project.deleted"),
     payload: ProjectDeletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.created"),
+    payload: BattleCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.meta-updated"),
+    payload: BattleMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.condition-added"),
+    payload: BattleConditionAddedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.condition-updated"),
+    payload: BattleConditionUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.condition-struck"),
+    payload: BattleConditionStruckPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.phase-changed"),
+    payload: BattlePhaseChangedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.deleted"),
+    payload: BattleDeletedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1485,6 +1806,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-queue-updated"),
+    payload: ThreadTurnQueueUpdatedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

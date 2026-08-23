@@ -1,4 +1,10 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  BattleId,
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
@@ -82,6 +88,17 @@ describe("getOrphanedWorktreePathForThread", () => {
     ];
     const result = getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"));
     expect(result).toBe("/tmp/repo/worktrees/feature-a");
+  });
+
+  it("never offers a battle thread's worktree, even as its only visible user", () => {
+    const threads = [
+      makeThread({
+        worktreePath: "/tmp/repo/worktrees/battle-streaming-diff",
+        battleId: BattleId.make("battle-1"),
+      }),
+    ];
+    const result = getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"));
+    expect(result).toBeNull();
   });
 });
 
