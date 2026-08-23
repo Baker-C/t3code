@@ -82,6 +82,47 @@ export class CheckpointRefUnavailableError extends Schema.TaggedErrorClass<Check
   }
 }
 
+/**
+ * A baseline-relative diff was requested for a thread that shares its
+ * worktree. Turn 0 of a shared directory is not this thread's starting point,
+ * so the diff would report a sibling thread's work as this thread's.
+ */
+export class CheckpointSharedWorktreeDiffUnavailableError extends Schema.TaggedErrorClass<CheckpointSharedWorktreeDiffUnavailableError>()(
+  "CheckpointSharedWorktreeDiffUnavailableError",
+  {
+    operation: CheckpointDiffOperation,
+    threadId: ThreadId,
+    workspacePath: Schema.String,
+    siblingThreadCount: NonNegativeInt,
+  },
+) {
+  override get message(): string {
+    const others =
+      this.siblingThreadCount === 1 ? "another thread" : `${this.siblingThreadCount} other threads`;
+    return `All-turns diff is unavailable for thread '${this.threadId}': ${others} work in '${this.workspacePath}', so a diff from the first checkpoint would include their changes. View the per-turn diffs instead.`;
+  }
+}
+
+/**
+ * A revert would roll the shared worktree back past work a cwd-sibling did
+ * after the target checkpoint. Restore is destructive and unscoped, so the
+ * sibling's changes cannot be preserved - the revert is refused instead.
+ */
+export class CheckpointRevertBlockedBySharedWorktreeError extends Schema.TaggedErrorClass<CheckpointRevertBlockedBySharedWorktreeError>()(
+  "CheckpointRevertBlockedBySharedWorktreeError",
+  {
+    threadId: ThreadId,
+    turnCount: NonNegativeInt,
+    blockingThreadId: ThreadId,
+    blockingThreadTitle: Schema.String,
+    blockingCheckpointAt: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Cannot revert to turn ${this.turnCount}: '${this.blockingThreadTitle}' shares this worktree and finished a turn at ${this.blockingCheckpointAt}, after the checkpoint you picked. Reverting would discard that thread's work.`;
+  }
+}
+
 export type CheckpointStoreError = VcsError;
 
 export type CheckpointServiceError =
@@ -91,4 +132,5 @@ export type CheckpointServiceError =
   | CheckpointThreadNotFoundError
   | CheckpointWorkspacePathMissingError
   | CheckpointTurnRangeUnavailableError
-  | CheckpointRefUnavailableError;
+  | CheckpointRefUnavailableError
+  | CheckpointSharedWorktreeDiffUnavailableError;

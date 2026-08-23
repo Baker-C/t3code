@@ -4,7 +4,7 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
-import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_MODEL, EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
@@ -15,9 +15,11 @@ import {
   codexPlanModeDeveloperInstructions,
 } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+import { clearMcpProviderSession, setMcpProviderSession } from "../../mcp/McpProviderSession.ts";
 import {
   buildTurnStartParams,
   hasConfiguredMcpServer,
+  mcpToolAvailability,
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
@@ -335,6 +337,38 @@ describe("T3 browser developer instructions", () => {
   });
 });
 
+describe("T3 battle developer instructions", () => {
+  it("describes the battle tools in both collaboration modes when they are granted", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(false, true),
+      codexPlanModeDeveloperInstructions(false, true),
+    ]) {
+      NodeAssert.match(instructions, /## T3 Code battles/);
+      NodeAssert.match(instructions, /battle_status/);
+      NodeAssert.match(instructions, /battle_condition_add/);
+      NodeAssert.match(instructions, /battle_condition_update/);
+      NodeAssert.match(instructions, /battle_condition_strike/);
+      // Scope, not completion — the whole point of a victory condition.
+      NodeAssert.match(instructions, /before any code lands/);
+    }
+  });
+
+  it("omits the battle block by default, since most threads are in no battle", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(true),
+      codexPlanModeDeveloperInstructions(true),
+      buildCodexDeveloperInstructions(
+        "default",
+        { model: "gpt-5.3-codex", reasoningEffort: "high" },
+        true,
+      ),
+    ]) {
+      NodeAssert.doesNotMatch(instructions, /## T3 Code battles/);
+      NodeAssert.doesNotMatch(instructions, /battle_status/);
+    }
+  });
+});
+
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);
@@ -646,4 +680,45 @@ describe("openCodexThread", () => {
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
     }),
   );
+});
+
+describe("mcpToolAvailability", () => {
+  const threadId = ThreadId.make("thread-mcp-availability");
+  const setCapabilities = (capabilities: ReadonlyArray<"preview" | "battle">) =>
+    setMcpProviderSession({
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId,
+      providerSessionId: "provider-session-1",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      endpoint: "http://127.0.0.1:1/mcp",
+      authorizationHeader: "Bearer token",
+      capabilities,
+    });
+  const mcpArgs = ["-c", 'mcp_servers.t3-code.url="http://127.0.0.1/mcp"'];
+
+  it("reports nothing available when no MCP server is configured", () => {
+    setCapabilities(["preview", "battle"]);
+    NodeAssert.deepEqual(mcpToolAvailability(threadId, undefined), {
+      browserToolsAvailable: false,
+      battleToolsAvailable: false,
+    });
+    clearMcpProviderSession(threadId);
+  });
+
+  it("follows the credential's capabilities when one is recorded", () => {
+    setCapabilities(["battle"]);
+    NodeAssert.deepEqual(mcpToolAvailability(threadId, mcpArgs), {
+      browserToolsAvailable: false,
+      battleToolsAvailable: true,
+    });
+    clearMcpProviderSession(threadId);
+  });
+
+  it("falls back to preview-only for a session with no recorded credential", () => {
+    clearMcpProviderSession(threadId);
+    NodeAssert.deepEqual(mcpToolAvailability(threadId, mcpArgs), {
+      browserToolsAvailable: true,
+      battleToolsAvailable: false,
+    });
+  });
 });

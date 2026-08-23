@@ -1,5 +1,7 @@
 import type { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
+import type { McpCapability } from "./McpInvocationContext.ts";
+
 export interface McpProviderSessionConfig {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -7,6 +9,11 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
+  /**
+   * The capabilities the credential actually grants. Prompt builders read this
+   * so the instructions never describe a toolkit the credential refuses.
+   */
+  readonly capabilities: ReadonlyArray<McpCapability>;
 }
 
 const sessionsByThread = new Map<ThreadId, McpProviderSessionConfig>();

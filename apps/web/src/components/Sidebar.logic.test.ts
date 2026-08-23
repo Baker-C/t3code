@@ -1131,6 +1131,26 @@ describe("resolveThreadStatusPill", () => {
     ).toBeNull();
   });
 
+  it("shows queued below working and above plan ready, without a pulse", () => {
+    const queuedThread = {
+      ...baseThread,
+      turnQueued: true,
+      hasActionableProposedPlan: true,
+      latestTurn: makeLatestTurn(),
+      session: { ...baseThread.session, status: "ready" as const, activeTurnId: null },
+    };
+
+    expect(resolveThreadStatusPill({ thread: queuedThread })).toMatchObject({
+      label: "Queued",
+      pulse: false,
+    });
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...queuedThread, session: baseThread.session },
+      }),
+    ).toMatchObject({ label: "Working" });
+  });
+
   it("shows completed when there is an unseen completion and no active blocker", () => {
     expect(
       resolveThreadStatusPill({

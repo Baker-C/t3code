@@ -13,6 +13,8 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { BattleToolkitHandlersLive } from "./toolkits/battle/handlers.ts";
+import { BattleToolkit } from "./toolkits/battle/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -216,6 +218,15 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewSnapshotRegistrationLive,
 );
 
+/**
+ * Battle tools are listed for every session; the handlers refuse when the
+ * credential lacks the `battle` capability, which is how a thread outside a
+ * battle (or a server with the setting off) is turned away.
+ */
+export const BattleToolkitRegistrationLive = McpServer.toolkit(BattleToolkit).pipe(
+  Layer.provide(BattleToolkitHandlersLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -223,4 +234,7 @@ const McpTransportLive = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  BattleToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive));

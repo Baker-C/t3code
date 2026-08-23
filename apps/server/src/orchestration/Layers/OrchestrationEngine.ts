@@ -1,4 +1,5 @@
 import type {
+  BattleId,
   OrchestrationEvent,
   OrchestrationReadModel,
   ProjectId,
@@ -59,8 +60,8 @@ interface CommandEnvelope {
 }
 
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread";
-  readonly aggregateId: ProjectId | ThreadId;
+  readonly aggregateKind: "project" | "thread" | "battle";
+  readonly aggregateId: ProjectId | ThreadId | BattleId;
 } {
   switch (command.type) {
     case "project.create":
@@ -69,6 +70,19 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       return {
         aggregateKind: "project",
         aggregateId: command.projectId,
+      };
+    case "battle.create":
+    case "battle.meta.update":
+    case "battle.condition.add":
+    case "battle.condition.update":
+    case "battle.condition.strike":
+    case "battle.declare-fighting":
+    case "battle.declare-defeat":
+    case "battle.reopen":
+    case "battle.delete":
+      return {
+        aggregateKind: "battle",
+        aggregateId: command.battleId,
       };
     default:
       return {

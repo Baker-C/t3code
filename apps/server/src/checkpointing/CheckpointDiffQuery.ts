@@ -25,12 +25,14 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import {
   CheckpointDiffResultInvalidError,
   CheckpointRefUnavailableError,
+  CheckpointSharedWorktreeDiffUnavailableError,
   CheckpointThreadNotFoundError,
   CheckpointTurnRangeUnavailableError,
   CheckpointWorkspacePathMissingError,
 } from "./Errors.ts";
 import type { CheckpointServiceError } from "./Errors.ts";
-import { checkpointRefForThreadTurn } from "./Utils.ts";
+import { resolveWorktreeSiblingThreadIds } from "./SharedWorktree.ts";
+import { checkpointRefForThreadTurn, preCheckpointRefForThreadTurn } from "./Utils.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
 
 /** Service tag for checkpoint diff queries. */
@@ -137,8 +139,22 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      const fromCheckpointRef =
-        input.fromTurnCount === 0
+      // A thread sharing its worktree captures a `-pre` ref as each turn
+      // starts. Prefer it: the previous turn's checkpoint has since absorbed
+      // whatever a sibling thread did in the same directory, so diffing from
+      // it would report the sibling's work as this turn's. Threads that own
+      // their worktree never have this ref and take the post->post path.
+      const preTurnCheckpointRef = preCheckpointRefForThreadTurn(
+        input.threadId,
+        input.fromTurnCount + 1,
+      );
+      const hasPreTurnCheckpoint = yield* checkpointStore
+        .hasCheckpointRef({ cwd: workspaceCwd, checkpointRef: preTurnCheckpointRef })
+        .pipe(Effect.withSpan("checkpoint.turnDiff.hasPreTurnCheckpoint"));
+
+      const fromCheckpointRef = hasPreTurnCheckpoint
+        ? preTurnCheckpointRef
+        : input.fromTurnCount === 0
           ? checkpointRefForThreadTurn(input.threadId, 0)
           : threadContext.value.checkpoints.find(
               (checkpoint) => checkpoint.checkpointTurnCount === input.fromTurnCount,
@@ -251,6 +267,23 @@ export const make = Effect.gen(function* () {
         threadId: input.threadId,
         turnCount: input.toTurnCount,
         checkpoint: "to",
+      });
+    }
+
+    // Turn 0 of a shared directory is nobody's private starting point, so
+    // there is no honest baseline-relative diff to compute. Refuse with a
+    // typed error the client can render rather than return a diff that
+    // credits this thread with a sibling's work.
+    const siblingThreadIds = yield* resolveWorktreeSiblingThreadIds(
+      projectionSnapshotQuery,
+      input.threadId,
+    );
+    if (siblingThreadIds.length > 0) {
+      return yield* new CheckpointSharedWorktreeDiffUnavailableError({
+        operation,
+        threadId: input.threadId,
+        workspacePath: workspaceCwd,
+        siblingThreadCount: siblingThreadIds.length,
       });
     }
 

@@ -26,6 +26,10 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
+  battleScopeProgress,
+  groupBattleThreadsByWorktree,
+} from "@t3tools/client-runtime/state/battles";
+import {
   scopeProjectRef,
   scopeThreadRef,
   scopedThreadKey,
@@ -41,6 +45,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   ClockIcon,
+  FolderGit2Icon,
   FolderPlusIcon,
   GitBranchIcon,
   MessageSquareIcon,
@@ -50,6 +55,7 @@ import {
   ServerIcon,
   SettingsIcon,
   SquarePenIcon,
+  SwordsIcon,
   TerminalIcon,
   Undo2Icon,
   XIcon,
@@ -105,6 +111,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
+import { battleEnvironment, useBattles, type EnvironmentBattle } from "../state/battles";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
@@ -119,6 +126,7 @@ import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat"
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import { buildSidebarBattleRows, layoutBattleMembers } from "./battles.logic";
 import {
   buildBulkTitleRegenerationContextMenuItem,
   formatWorkingDurationLabel,
@@ -194,14 +202,22 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 // Keep the v2 key so existing preferences survive the v2-to-default rename.
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:snoozed-expanded";
+const DEFEATED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:defeated-expanded";
 // Collapsed project sections, by logical project key. Sections default to
 // expanded, so only collapsed keys are stored.
 const COLLAPSED_PROJECT_SECTIONS_KEY = "t3code:sidebar-v2:collapsed-projects";
+// Collapsed battles, by environment-scoped battle key. Same defaults-expanded
+// contract as project sections.
+const COLLAPSED_BATTLES_KEY = "t3code:sidebar-v2:collapsed-battles";
 const CollapsedProjectKeysSchema = Schema.Array(Schema.String);
 const NO_COLLAPSED_PROJECT_KEYS: readonly string[] = [];
 
 function threadKeyOf(thread: Pick<SidebarThreadSummary, "environmentId" | "id">): string {
   return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+}
+
+function battleKeyOf(battle: Pick<EnvironmentBattle, "environmentId" | "id">): string {
+  return `${battle.environmentId}:${battle.id}`;
 }
 
 function compactSidebarTimeLabel(label: string): string {
@@ -848,7 +864,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // working threads aren't your problem yet) — only the colored status label
   // stands out.
   const isInFlight =
-    status === "working" || status === "monitoring" || status === "approval" || status === "input";
+    status === "working" ||
+    status === "monitoring" ||
+    status === "queued" ||
+    status === "approval" ||
+    status === "input";
   const shouldRecede =
     (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
   // Status hues follow the system-wide convention set by sidebar v1 and the
@@ -874,37 +894,45 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             icon: null,
             className: "text-sky-600 dark:text-sky-400",
           }
-        : status === "approval"
+        : status === "queued"
           ? {
-              label: "Approval",
+              // Neutral and still: the thread is waiting its turn on a shared
+              // worktree, which is not progress and not the user's problem.
+              label: "Queued",
               icon: null,
-              className: "text-amber-700 dark:text-amber-300",
+              className: "text-muted-foreground",
             }
-          : status === "input"
+          : status === "approval"
             ? {
-                label: "Input",
+                label: "Approval",
                 icon: null,
-                className: "text-indigo-600 dark:text-indigo-300",
+                className: "text-amber-700 dark:text-amber-300",
               }
-            : status === "failed"
+            : status === "input"
               ? {
-                  label: "Failed",
+                  label: "Input",
                   icon: null,
-                  className: "text-red-700 dark:text-red-300",
+                  className: "text-indigo-600 dark:text-indigo-300",
                 }
-              : isWoke
+              : status === "failed"
                 ? {
-                    label: "Woke",
-                    icon: "woke" as const,
-                    className: "text-amber-700 dark:text-amber-300",
+                    label: "Failed",
+                    icon: null,
+                    className: "text-red-700 dark:text-red-300",
                   }
-                : isUnread
+                : isWoke
                   ? {
-                      label: "Done",
-                      icon: "done" as const,
-                      className: "text-emerald-700 dark:text-emerald-300",
+                      label: "Woke",
+                      icon: "woke" as const,
+                      className: "text-amber-700 dark:text-amber-300",
                     }
-                  : null;
+                  : isUnread
+                    ? {
+                        label: "Done",
+                        icon: "done" as const,
+                        className: "text-emerald-700 dark:text-emerald-300",
+                      }
+                    : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1905,6 +1933,164 @@ const SidebarProjectSectionHeader = memo(function SidebarProjectSectionHeader(pr
   );
 });
 
+/**
+ * Collapsible header for one battle inside a project section. Carries the
+ * battle's scope progress and, when collapsed, its members' rolled-up status —
+ * the same rollup a collapsed project section shows, so a closed battle still
+ * signals live work. Defeated battles get the reopen action instead.
+ */
+const SidebarBattleRow = memo(function SidebarBattleRow(props: {
+  battle: EnvironmentBattle;
+  threads: readonly SidebarThreadSummary[];
+  collapsed: boolean;
+  battleKey: string;
+  onToggle: (battleKey: string) => void;
+  onNewThread?: ((battle: EnvironmentBattle) => void) | undefined;
+  onReopen?: ((battle: EnvironmentBattle) => void) | undefined;
+}) {
+  const { battle, battleKey, collapsed, onNewThread, onReopen, onToggle, threads } = props;
+  const aggregateStatus = useMemo(
+    () =>
+      collapsed
+        ? resolveProjectStatusIndicator(
+            threads.map((thread) => resolveThreadStatusPill({ thread })),
+          )
+        : null,
+    [collapsed, threads],
+  );
+  const progress = battleScopeProgress(battle);
+  const handleToggle = useCallback(() => onToggle(battleKey), [battleKey, onToggle]);
+  const handleKeyDown = useCallback(
+    (event: ReactKeyboardEvent) => {
+      if ((event.target as HTMLElement).closest("button")) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onToggle(battleKey);
+      }
+    },
+    [battleKey, onToggle],
+  );
+  const handleReopen = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onReopen?.(battle);
+    },
+    [battle, onReopen],
+  );
+  const handleNewThread = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onNewThread?.(battle);
+    },
+    [battle, onNewThread],
+  );
+  const hasHoverActions = Boolean(onReopen || onNewThread);
+  return (
+    <li data-thread-selection-safe className="list-none">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        aria-label={`${battle.title} battle`}
+        data-testid="sidebar-battle-row"
+        onClick={handleToggle}
+        onKeyDown={handleKeyDown}
+        className="group/battle-row flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md pe-2 ps-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <ChevronDownIcon
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 text-sidebar-muted-foreground/70 transition-transform",
+            collapsed && "-rotate-90",
+          )}
+        />
+        <SwordsIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground/80" />
+        <span className="min-w-0 truncate text-xs font-medium text-sidebar-foreground/85">
+          {battle.title}
+        </span>
+        {progress.total > 0 ? (
+          <span className="shrink-0 text-[11px] text-sidebar-muted-foreground/60 tabular-nums">
+            {progress.scoped}/{progress.total}
+          </span>
+        ) : null}
+        <span className="relative ml-auto flex h-6 min-w-6 shrink-0 items-center justify-end">
+          <span
+            className={cn(
+              "flex items-center gap-1.5",
+              hasHoverActions ? "transition-opacity group-hover/battle-row:opacity-0" : null,
+            )}
+          >
+            {aggregateStatus ? (
+              <span
+                role="img"
+                aria-label={aggregateStatus.label}
+                className={cn("size-1.5 rounded-full", aggregateStatus.dotClass)}
+              />
+            ) : null}
+          </span>
+          {hasHoverActions ? (
+            <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 group-hover/battle-row:pointer-events-auto group-hover/battle-row:opacity-100">
+              {onNewThread ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label={`New thread in ${battle.title}`}
+                        onClick={handleNewThread}
+                        className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    }
+                  >
+                    <PlusIcon className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipPopup>New thread in {battle.title}</TooltipPopup>
+                </Tooltip>
+              ) : null}
+              {onReopen ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label={`Reopen ${battle.title}`}
+                        onClick={handleReopen}
+                        className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    }
+                  >
+                    <Undo2Icon className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipPopup>Reopen battle</TooltipPopup>
+                </Tooltip>
+              ) : null}
+            </span>
+          ) : null}
+        </span>
+      </div>
+    </li>
+  );
+});
+
+/** Worktree divider inside a battle that spans several repos: without it,
+    two rows on different repos read as the same workspace. */
+const SidebarBattleWorktreeLabel = memo(function SidebarBattleWorktreeLabel(props: {
+  repoLabel: string;
+  branch: string | null;
+}) {
+  return (
+    <li data-thread-selection-safe className="list-none">
+      <div className="flex h-5 items-center gap-1.5 ps-1.5 text-[11px] text-sidebar-muted-foreground/60">
+        <FolderGit2Icon aria-hidden className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">{props.repoLabel}</span>
+        {props.branch !== null ? <span className="min-w-0 truncate">{props.branch}</span> : null}
+      </div>
+    </li>
+  );
+});
+
 export default function Sidebar() {
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
@@ -2155,6 +2341,31 @@ export default function Sidebar() {
     [isMobile, router, setOpenMobile],
   );
 
+  // Battles group threads inside their project; a defeated battle leaves the
+  // inbox entirely and lives on the Defeated shelf with its members.
+  const battles = useBattles();
+  const { activeBattles, defeatedBattles } = useMemo(() => {
+    const active: EnvironmentBattle[] = [];
+    const defeated: EnvironmentBattle[] = [];
+    for (const battle of battles) {
+      (battle.phase === "defeated" ? defeated : active).push(battle);
+    }
+    return {
+      activeBattles: active,
+      // Most recently defeated first: the shelf answers "what did we just
+      // finish", the same question the settled tail answers for threads.
+      defeatedBattles: defeated.toSorted(
+        (left, right) =>
+          firstValidTimestampMs(right.defeatedAt, right.updatedAt) -
+          firstValidTimestampMs(left.defeatedAt, left.updatedAt),
+      ),
+    };
+  }, [battles]);
+  const defeatedBattleKeys = useMemo(
+    () => new Set(defeatedBattles.map((battle) => battleKeyOf(battle))),
+    [defeatedBattles],
+  );
+
   // Settled threads stay in the live shell stream (settled ≠ archived), so
   // the partition works directly off live shells: no archived-snapshot
   // merging, no optimistic holds. Archived threads remain hidden here —
@@ -2175,7 +2386,12 @@ export default function Sidebar() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    const visible = threads.filter((thread) => thread.archivedAt === null);
+    const visible = threads.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        (thread.battleId == null ||
+          !defeatedBattleKeys.has(`${thread.environmentId}:${thread.battleId}`)),
+    );
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
     const snoozed: EnvironmentThreadShell[] = [];
@@ -2253,11 +2469,32 @@ export default function Sidebar() {
     autoSettleAfterDays,
     autoSettleOnMerge,
     changeRequestSnapshotByKey,
+    defeatedBattleKeys,
     nowMinute,
     serverConfigs,
     snoozeWakeTick,
     threads,
   ]);
+
+  // Members of defeated battles, in the sidebar's usual thread order, so the
+  // shelf can open a battle and show what fought in it.
+  const defeatedBattleMembers = useMemo(() => {
+    if (defeatedBattles.length === 0) return new Map<string, EnvironmentThreadShell[]>();
+    const members = new Map<string, EnvironmentThreadShell[]>();
+    for (const thread of sortThreadsForSidebar(
+      threads.filter(
+        (thread) =>
+          thread.battleId != null &&
+          defeatedBattleKeys.has(`${thread.environmentId}:${thread.battleId}`),
+      ),
+    )) {
+      const key = `${thread.environmentId}:${thread.battleId}`;
+      const existing = members.get(key);
+      if (existing) existing.push(thread);
+      else members.set(key, [thread]);
+    }
+    return members;
+  }, [defeatedBattleKeys, defeatedBattles.length, threads]);
 
   // With several projects the card threads render inside collapsible
   // per-project sections; a single project renders the flat list (no header
@@ -2280,6 +2517,63 @@ export default function Sidebar() {
       );
     },
     [setCollapsedProjectKeys],
+  );
+  const [collapsedBattleKeys, setCollapsedBattleKeys] = useLocalStorage(
+    COLLAPSED_BATTLES_KEY,
+    NO_COLLAPSED_PROJECT_KEYS,
+    CollapsedProjectKeysSchema,
+  );
+  const collapsedBattleKeySet = useMemo(() => new Set(collapsedBattleKeys), [collapsedBattleKeys]);
+  const toggleBattleCollapsed = useCallback(
+    (battleKey: string) => {
+      setCollapsedBattleKeys((keys) =>
+        keys.includes(battleKey) ? keys.filter((key) => key !== battleKey) : [...keys, battleKey],
+      );
+    },
+    [setCollapsedBattleKeys],
+  );
+  const reopenBattle = useAtomCommand(battleEnvironment.reopen, "sidebar:battle:reopen");
+  const handleNewThreadInBattle = useCallback(
+    (battle: EnvironmentBattle) => {
+      if (isMobile) setOpenMobile(false);
+      // A battle with exactly one worktree has an obvious destination; with
+      // several, the composer's destination selector asks.
+      const members = threads.filter(
+        (thread) => thread.battleId === battle.id && thread.environmentId === battle.environmentId,
+      );
+      const worktrees = groupBattleThreadsByWorktree(members).worktrees;
+      const only = worktrees.length === 1 ? worktrees[0] : undefined;
+      void handleNewThreadRef.current(scopeProjectRef(battle.environmentId, battle.projectId), {
+        battleId: battle.id,
+        ...(only
+          ? { worktreePath: only.worktreePath, branch: only.branch, envMode: "worktree" as const }
+          : {}),
+      });
+    },
+    [isMobile, setOpenMobile, threads],
+  );
+  const handleReopenBattle = useCallback(
+    (battle: EnvironmentBattle) => {
+      void reopenBattle({
+        environmentId: battle.environmentId,
+        input: { battleId: battle.id },
+      });
+    },
+    [reopenBattle],
+  );
+  // Battle rows sit inside a project's active threads; pinned threads escape
+  // grouping entirely, matching how a pin overrides every other lifecycle.
+  // `memberKeys` scopes the battles to the section's projects so a battle
+  // with no thread yet still renders — under its own project.
+  const buildBattleRows = useCallback(
+    (sectionThreads: readonly EnvironmentThreadShell[], memberKeys: ReadonlySet<string>) =>
+      buildSidebarBattleRows(
+        sectionThreads,
+        activeBattles.filter((battle) =>
+          memberKeys.has(`${battle.environmentId}:${battle.projectId}`),
+        ),
+      ),
+    [activeBattles],
   );
   // Partitions the classified card threads (pinned + active) by logical
   // project. Sorting is inherited: filtering an already-sorted list keeps it
@@ -2319,6 +2613,20 @@ export default function Sidebar() {
       unassignedThreads: [...pinned.unassigned, ...active.unassigned],
     };
   }, [activeThreads, pinnedThreads, projectGroups]);
+
+  // Flat mode has no sections, so battles scope against every visible
+  // project (there is at most one group in that mode).
+  const flatSectionMemberKeys = useMemo(
+    () =>
+      new Set(
+        projectGroups.flatMap((group) =>
+          group.memberProjectRefs.map(
+            (projectRef) => `${projectRef.environmentId}:${projectRef.projectId}`,
+          ),
+        ),
+      ),
+    [projectGroups],
+  );
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
@@ -2417,6 +2725,16 @@ export default function Sidebar() {
     false,
     Schema.Boolean,
   );
+  // Defeated battles are history: the shelf starts closed, like Snoozed.
+  const [defeatedShelfExpanded, setDefeatedShelfExpanded] = useLocalStorage(
+    DEFEATED_SHELF_EXPANDED_KEY,
+    false,
+    Schema.Boolean,
+  );
+  const toggleDefeatedShelf = useCallback(
+    () => setDefeatedShelfExpanded((value) => !value),
+    [setDefeatedShelfExpanded],
+  );
   const toggleSnoozedShelf = useCallback(
     () => setSnoozedShelfExpanded((value) => !value),
     [setSnoozedShelfExpanded],
@@ -2439,12 +2757,50 @@ export default function Sidebar() {
   // (so they don't participate in jump shortcuts or multi-select, matching
   // the snoozed shelf), except the open thread, which must never vanish
   // behind a collapsed header.
+  // Battle members in the order their rows render, with collapsed battles
+  // contributing only the open thread — the same exception a collapsed
+  // project section makes. Feeds both the renderer and the flattened row
+  // list, so jump hints and multi-select can never drift from the screen.
+  const visibleBattleMembers = useCallback(
+    (battleKey: string, members: readonly EnvironmentThreadShell[]) => {
+      const items = layoutBattleMembers(members);
+      if (!collapsedBattleKeySet.has(battleKey)) return items;
+      if (routeThreadKey === null) return [];
+      const routeItem = items.find(
+        (item) => item.kind === "thread" && threadKeyOf(item.thread) === routeThreadKey,
+      );
+      return routeItem === undefined ? [] : [routeItem];
+    },
+    [collapsedBattleKeySet, routeThreadKey],
+  );
+  const flattenSectionThreads = useCallback(
+    (sectionThreads: readonly EnvironmentThreadShell[], memberKeys: ReadonlySet<string>) => {
+      const rows: EnvironmentThreadShell[] = [];
+      for (const row of buildBattleRows(sectionThreads, memberKeys)) {
+        if (row.kind === "thread") {
+          rows.push(row.thread);
+          continue;
+        }
+        for (const item of visibleBattleMembers(battleKeyOf(row.battle), row.threads)) {
+          if (item.kind === "thread") rows.push(item.thread);
+        }
+      }
+      return rows;
+    },
+    [buildBattleRows, visibleBattleMembers],
+  );
+
   const renderedCardThreads = useMemo(() => {
-    if (projectSections === null) return [...pinnedThreads, ...activeThreads];
+    if (projectSections === null) {
+      return [...pinnedThreads, ...flattenSectionThreads(activeThreads, flatSectionMemberKeys)];
+    }
     const rows: EnvironmentThreadShell[] = [];
     for (const section of projectSections.sections) {
       if (!collapsedProjectKeySet.has(section.group.projectKey)) {
-        rows.push(...section.cardThreads);
+        rows.push(
+          ...section.pinnedThreads,
+          ...flattenSectionThreads(section.activeThreads, section.memberKeys),
+        );
         continue;
       }
       if (routeThreadKey === null) continue;
@@ -2455,11 +2811,36 @@ export default function Sidebar() {
     }
     rows.push(...projectSections.unassignedThreads);
     return rows;
-  }, [activeThreads, collapsedProjectKeySet, pinnedThreads, projectSections, routeThreadKey]);
+  }, [
+    activeThreads,
+    collapsedProjectKeySet,
+    flatSectionMemberKeys,
+    flattenSectionThreads,
+    pinnedThreads,
+    projectSections,
+    routeThreadKey,
+  ]);
+
+  // Defeated battle members render last, and only while their shelf and
+  // their battle are open — the flattened order has to match the screen.
+  const renderedDefeatedThreads = useMemo(() => {
+    if (!defeatedShelfExpanded) return [];
+    return defeatedBattles.flatMap((battle) => {
+      const battleKey = battleKeyOf(battle);
+      return visibleBattleMembers(battleKey, defeatedBattleMembers.get(battleKey) ?? []).flatMap(
+        (item) => (item.kind === "thread" ? [item.thread] : []),
+      );
+    });
+  }, [defeatedBattleMembers, defeatedBattles, defeatedShelfExpanded, visibleBattleMembers]);
 
   const orderedThreads = useMemo(
-    () => [...renderedCardThreads, ...visibleSnoozedThreads, ...renderedSettledThreads],
-    [renderedCardThreads, visibleSnoozedThreads, renderedSettledThreads],
+    () => [
+      ...renderedCardThreads,
+      ...visibleSnoozedThreads,
+      ...renderedSettledThreads,
+      ...renderedDefeatedThreads,
+    ],
+    [renderedCardThreads, visibleSnoozedThreads, renderedSettledThreads, renderedDefeatedThreads],
   );
   const orderedThreadKeys = useMemo(
     () =>
@@ -3948,6 +4329,56 @@ export default function Sidebar() {
                       />
                     );
                   };
+                  // Active threads, with each battle folded into one row that
+                  // nests its members. A section with no battles renders the
+                  // exact same rows it did before battles existed.
+                  const renderActiveThreads = (
+                    sectionThreads: readonly EnvironmentThreadShell[],
+                    memberKeys: ReadonlySet<string>,
+                  ): ReactNode[] => {
+                    const nodes: ReactNode[] = [];
+                    for (const row of buildBattleRows(sectionThreads, memberKeys)) {
+                      if (row.kind === "thread") {
+                        nodes.push(renderThreadRow(row.thread, "active"));
+                        continue;
+                      }
+                      const battleKey = battleKeyOf(row.battle);
+                      const memberItems = visibleBattleMembers(battleKey, row.threads);
+                      nodes.push(
+                        <SidebarBattleRow
+                          key={`battle-${battleKey}`}
+                          battle={row.battle}
+                          threads={row.threads}
+                          collapsed={collapsedBattleKeySet.has(battleKey)}
+                          battleKey={battleKey}
+                          onToggle={toggleBattleCollapsed}
+                          onNewThread={handleNewThreadInBattle}
+                        />,
+                      );
+                      if (memberItems.length === 0) continue;
+                      nodes.push(
+                        <li key={`battle-body-${battleKey}`} className="list-none">
+                          <ul
+                            role="list"
+                            className="ms-3 flex flex-col gap-px border-s border-sidebar-border/70 ps-1.5"
+                          >
+                            {memberItems.map((item) =>
+                              item.kind === "worktree-label" ? (
+                                <SidebarBattleWorktreeLabel
+                                  key={`worktree-${item.worktreePath}`}
+                                  repoLabel={item.repoLabel}
+                                  branch={item.branch}
+                                />
+                              ) : (
+                                renderThreadRow(item.thread, "active")
+                              ),
+                            )}
+                          </ul>
+                        </li>,
+                      );
+                    }
+                    return nodes;
+                  };
                   const items: ReactNode[] = [];
                   if (projectSections !== null) {
                     // Grouped mode: one collapsible section per logical
@@ -4045,9 +4476,7 @@ export default function Sidebar() {
                                 })}
                               </SortableContext>
                             </DndContext>
-                            {section.activeThreads.map((thread) =>
-                              renderThreadRow(thread, "active"),
-                            )}
+                            {renderActiveThreads(section.activeThreads, section.memberKeys)}
                           </ul>
                         </li>,
                       );
@@ -4125,9 +4554,7 @@ export default function Sidebar() {
                         />,
                       );
                     }
-                    for (const thread of activeThreads) {
-                      items.push(renderThreadRow(thread, "active"));
-                    }
+                    items.push(...renderActiveThreads(activeThreads, flatSectionMemberKeys));
                   }
                   // Snoozed shelf: between the inbox and Settled — out of the
                   // way, never gone. The header always renders while anything
@@ -4201,6 +4628,80 @@ export default function Sidebar() {
                   }
                   for (const thread of renderedSettledThreads) {
                     items.push(renderThreadRow(thread, "settled"));
+                  }
+                  // Defeated shelf: won battles leave the inbox with their
+                  // threads, and stay reachable here — reopen puts the whole
+                  // battle back. Global like Snoozed, since a defeat is a
+                  // project-level milestone, not another thread state.
+                  if (defeatedBattles.length > 0) {
+                    items.push(
+                      <li
+                        key="defeated-shelf-header"
+                        data-thread-selection-safe
+                        className="list-none"
+                      >
+                        <button
+                          type="button"
+                          onClick={toggleDefeatedShelf}
+                          aria-expanded={defeatedShelfExpanded}
+                          data-testid="sidebar-defeated-shelf-toggle"
+                          className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left"
+                        >
+                          <span className="text-xs font-medium text-emerald-700 dark:text-emerald-300/90">
+                            {defeatedShelfExpanded
+                              ? "Defeated"
+                              : `Defeated (${defeatedBattles.length})`}
+                          </span>
+                          <span className="h-px flex-1 bg-emerald-500/20 dark:bg-emerald-300/15" />
+                          <ChevronDownIcon
+                            aria-hidden
+                            className={cn(
+                              "size-3 text-emerald-700 transition-transform dark:text-emerald-300/90",
+                              defeatedShelfExpanded && "rotate-180",
+                            )}
+                          />
+                        </button>
+                      </li>,
+                    );
+                    if (defeatedShelfExpanded) {
+                      for (const battle of defeatedBattles) {
+                        const battleKey = battleKeyOf(battle);
+                        const members = defeatedBattleMembers.get(battleKey) ?? [];
+                        const memberItems = visibleBattleMembers(battleKey, members);
+                        items.push(
+                          <SidebarBattleRow
+                            key={`defeated-${battleKey}`}
+                            battle={battle}
+                            threads={members}
+                            collapsed={collapsedBattleKeySet.has(battleKey)}
+                            battleKey={battleKey}
+                            onToggle={toggleBattleCollapsed}
+                            onReopen={handleReopenBattle}
+                          />,
+                        );
+                        if (memberItems.length === 0) continue;
+                        items.push(
+                          <li key={`defeated-body-${battleKey}`} className="list-none">
+                            <ul
+                              role="list"
+                              className="ms-3 flex flex-col gap-px border-s border-sidebar-border/70 ps-1.5"
+                            >
+                              {memberItems.map((item) =>
+                                item.kind === "worktree-label" ? (
+                                  <SidebarBattleWorktreeLabel
+                                    key={`worktree-${item.worktreePath}`}
+                                    repoLabel={item.repoLabel}
+                                    branch={item.branch}
+                                  />
+                                ) : (
+                                  renderThreadRow(item.thread, "settled")
+                                ),
+                              )}
+                            </ul>
+                          </li>,
+                        );
+                      }
+                    }
                   }
                   return items;
                 })()}

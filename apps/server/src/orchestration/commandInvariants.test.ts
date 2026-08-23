@@ -51,6 +51,7 @@ const readModel: OrchestrationReadModel = {
       deletedAt: null,
     },
   ],
+  battles: [],
   threads: [
     {
       id: ThreadId.make("thread-1"),

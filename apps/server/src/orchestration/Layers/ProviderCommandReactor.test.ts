@@ -13,6 +13,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import {
   ApprovalRequestId,
+  BattleId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -65,6 +66,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
+const harnessBattleId = BattleId.make("battle-harness");
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
@@ -153,6 +155,9 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    /** Enlists thread-1 in a battle with a branch but no worktree. */
+    readonly battleThreadBranch?: string;
+    readonly gitWorkflowOverrides?: Partial<GitWorkflowService.GitWorkflowService["Service"]>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -395,6 +400,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(
         Layer.mock(GitWorkflowService.GitWorkflowService)({
           renameBranch,
+          ...input?.gitWorkflowOverrides,
         } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
       ),
       Layer.provideMerge(
@@ -434,6 +440,18 @@ describe("ProviderCommandReactor", () => {
         createdAt: now,
       }),
     );
+    if (input?.battleThreadBranch) {
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "battle.create",
+          commandId: CommandId.make("cmd-battle-create"),
+          battleId: harnessBattleId,
+          projectId: asProjectId("project-1"),
+          title: "Harness Battle",
+          createdAt: now,
+        }),
+      );
+    }
     await Effect.runPromise(
       engine.dispatch({
         type: "thread.create",
@@ -444,8 +462,9 @@ describe("ProviderCommandReactor", () => {
         modelSelection: modelSelection,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        branch: null,
+        branch: input?.battleThreadBranch ?? null,
         worktreePath: null,
+        ...(input?.battleThreadBranch ? { battleId: harnessBattleId } : {}),
         createdAt: now,
       }),
     );
@@ -2942,5 +2961,167 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     expect(thread?.session?.activeTurnId).toBeNull();
+  });
+  it("restores a retired battle worktree from the stored branch on the next turn", async () => {
+    const listRefs = vi.fn(() =>
+      Effect.succeed({
+        refs: [
+          {
+            name: "battle/streaming-diff",
+            current: false,
+            isDefault: false,
+            isRemote: false,
+            worktreePath: null,
+          },
+        ],
+        isRepo: true,
+        hasPrimaryRemote: false,
+        nextCursor: null,
+        totalCount: 1,
+      }),
+    );
+    const createWorktree = vi.fn((_input: { readonly cwd: string; readonly refName: string }) =>
+      Effect.succeed({
+        worktree: {
+          path: "/tmp/worktrees/battle-streaming-diff",
+          refName: "battle/streaming-diff",
+        },
+      }),
+    );
+    const harness = await createHarness({
+      battleThreadBranch: "battle/streaming-diff",
+      gitWorkflowOverrides: { listRefs, createWorktree } as never,
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-reprovision"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-reprovision"),
+          role: "user",
+          text: "carry on",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(createWorktree).toHaveBeenCalledTimes(1);
+    expect(createWorktree.mock.calls[0]?.[0]).toMatchObject({
+      cwd: "/tmp/provider-project",
+      refName: "battle/streaming-diff",
+    });
+    // The restored worktree is the turn's cwd, not the project root.
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      cwd: "/tmp/worktrees/battle-streaming-diff",
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.worktreePath).toBe("/tmp/worktrees/battle-streaming-diff");
+  });
+
+  it("reuses an existing worktree when the battle branch already has one", async () => {
+    const listRefs = vi.fn(() =>
+      Effect.succeed({
+        refs: [
+          {
+            name: "battle/streaming-diff",
+            current: false,
+            isDefault: false,
+            isRemote: false,
+            worktreePath: "/tmp/worktrees/already-there",
+          },
+        ],
+        isRepo: true,
+        hasPrimaryRemote: false,
+        nextCursor: null,
+        totalCount: 1,
+      }),
+    );
+    const createWorktree = vi.fn(() => Effect.die("createWorktree should not be called"));
+    const harness = await createHarness({
+      battleThreadBranch: "battle/streaming-diff",
+      gitWorkflowOverrides: { listRefs, createWorktree } as never,
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-reuse"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-reuse"),
+          role: "user",
+          text: "carry on",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      cwd: "/tmp/worktrees/already-there",
+    });
+  });
+
+  it("refuses the turn when the battle branch no longer exists", async () => {
+    const listRefs = vi.fn(() =>
+      Effect.succeed({
+        refs: [],
+        isRepo: true,
+        hasPrimaryRemote: false,
+        nextCursor: null,
+        totalCount: 0,
+      }),
+    );
+    const createWorktree = vi.fn(() => Effect.die("createWorktree should not be called"));
+    const harness = await createHarness({
+      battleThreadBranch: "battle/deleted-elsewhere",
+      gitWorkflowOverrides: { listRefs, createWorktree } as never,
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-missing-branch"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-missing-branch"),
+          role: "user",
+          text: "carry on",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ===
+        true
+      );
+    });
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    // Refusing beats silently running the agent in the project root.
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 });

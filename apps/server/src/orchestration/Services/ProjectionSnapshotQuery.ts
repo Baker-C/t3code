@@ -7,7 +7,9 @@
  * @module ProjectionSnapshotQuery
  */
 import type {
+  BattleId,
   CheckpointRef,
+  OrchestrationBattle,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
   OrchestrationProjectShell,
@@ -43,6 +45,25 @@ export interface ProjectionThreadCheckpointContext {
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+}
+
+/**
+ * The minimum needed to decide which threads share a working directory: each
+ * live thread's project, battle, and worktree path, plus the project roots a
+ * worktree-less thread resolves to. Archived threads are included - archiving
+ * does not release a worktree - and deleted ones are not.
+ */
+export interface ProjectionWorktreeOccupancy {
+  readonly threads: ReadonlyArray<{
+    readonly id: ThreadId;
+    readonly projectId: ProjectId;
+    readonly battleId: BattleId | null;
+    readonly worktreePath: string | null;
+  }>;
+  readonly projects: ReadonlyArray<{
+    readonly id: ProjectId;
+    readonly workspaceRoot: string;
+  }>;
 }
 
 export interface ProjectionFullThreadDiffContext {
@@ -134,11 +155,30 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectionRepositoryError>;
 
   /**
+   * Read a single live (not deleted) battle row by id.
+   */
+  readonly getBattleById: (
+    battleId: BattleId,
+  ) => Effect.Effect<Option.Option<OrchestrationBattle>, ProjectionRepositoryError>;
+
+  /**
    * Read the earliest active thread for a project.
    */
   readonly getFirstActiveThreadIdByProjectId: (
     projectId: ProjectId,
   ) => Effect.Effect<Option.Option<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * Read worktree occupancy across every live thread.
+   *
+   * Deliberately narrow: the shell snapshots this replaces run six queries
+   * each and decode every column, which is far too much for a check that runs
+   * on each turn start.
+   */
+  readonly getWorktreeOccupancy: () => Effect.Effect<
+    ProjectionWorktreeOccupancy,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read the checkpoint context needed to resolve a single thread diff.

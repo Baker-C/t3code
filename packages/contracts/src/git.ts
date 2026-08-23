@@ -134,6 +134,13 @@ export const VcsListRefsInput = Schema.Struct({
 });
 export type VcsListRefsInput = typeof VcsListRefsInput.Type;
 
+export const VcsListRepoRootsInput = Schema.Struct({
+  // The project workspace root to scan. A project folder may contain several
+  // independent git repos (e.g. frontend/ and backend/); each becomes a root.
+  cwd: TrimmedNonEmptyStringSchema,
+});
+export type VcsListRepoRootsInput = typeof VcsListRepoRootsInput.Type;
+
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
@@ -274,6 +281,19 @@ export const VcsCreateWorktreeResult = Schema.Struct({
   worktree: VcsWorktree,
 });
 export type VcsCreateWorktreeResult = typeof VcsCreateWorktreeResult.Type;
+
+export const VcsRepoRoot = Schema.Struct({
+  path: TrimmedNonEmptyStringSchema,
+  // Relative to the scanned cwd; "." when the workspace root itself is a repo.
+  relativePath: TrimmedNonEmptyStringSchema,
+  currentBranch: Schema.NullOr(TrimmedNonEmptyStringSchema),
+});
+export type VcsRepoRoot = typeof VcsRepoRoot.Type;
+
+export const VcsListRepoRootsResult = Schema.Struct({
+  roots: Schema.Array(VcsRepoRoot),
+});
+export type VcsListRepoRootsResult = typeof VcsListRepoRootsResult.Type;
 
 export const GitResolvePullRequestResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,

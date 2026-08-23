@@ -1,4 +1,5 @@
 import {
+  BattleId,
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
@@ -217,6 +218,12 @@ const PersistedDraftThreadState = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
   startFromOrigin: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Which battle the thread enlists in on its first send. Decoding default
+  // keeps drafts persisted before battles valid.
+  battleId: Schema.NullOr(BattleId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // Repo root the first worktree is cut from, for project folders holding
+  // several repos. Null means the project root.
+  repoRoot: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   promotedTo: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -321,6 +328,8 @@ export interface DraftSessionState {
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
   startFromOrigin: boolean;
+  battleId: BattleId | null;
+  repoRoot: string | null;
   promotedTo?: ScopedThreadRef | null;
 }
 
@@ -383,6 +392,8 @@ interface ComposerDraftStoreState {
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
+      battleId?: BattleId | null;
+      repoRoot?: string | null;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
     },
@@ -398,6 +409,8 @@ interface ComposerDraftStoreState {
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
+      battleId?: BattleId | null;
+      repoRoot?: string | null;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
     },
@@ -412,6 +425,8 @@ interface ComposerDraftStoreState {
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
       startFromOrigin?: boolean;
+      battleId?: BattleId | null;
+      repoRoot?: string | null;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
     },
@@ -1371,6 +1386,8 @@ function createDraftThreadState(
     createdAt?: string;
     envMode?: DraftThreadEnvMode;
     startFromOrigin?: boolean;
+    battleId?: BattleId | null;
+    repoRoot?: string | null;
     runtimeMode?: RuntimeMode;
     interactionMode?: ProviderInteractionMode;
   },
@@ -1399,6 +1416,20 @@ function createDraftThreadState(
     options?.startFromOrigin === undefined
       ? (existingThread?.startFromOrigin ?? false)
       : options.startFromOrigin;
+  // A battle belongs to one project, so a project change drops the binding
+  // for the same reason branch and worktree path drop.
+  const nextBattleId =
+    options?.battleId === undefined
+      ? projectChanged
+        ? null
+        : (existingThread?.battleId ?? null)
+      : options.battleId;
+  const nextRepoRoot =
+    options?.repoRoot === undefined
+      ? projectChanged
+        ? null
+        : (existingThread?.repoRoot ?? null)
+      : options.repoRoot;
   return {
     threadId,
     environmentId: projectRef.environmentId,
@@ -1413,6 +1444,8 @@ function createDraftThreadState(
     envMode:
       options?.envMode ?? (nextWorktreePath ? "worktree" : (existingThread?.envMode ?? "local")),
     startFromOrigin: nextStartFromOrigin,
+    battleId: nextBattleId,
+    repoRoot: nextRepoRoot,
     promotedTo: null,
   };
 }
@@ -1445,6 +1478,8 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.worktreePath === right.worktreePath &&
     left.envMode === right.envMode &&
     left.startFromOrigin === right.startFromOrigin &&
+    left.battleId === right.battleId &&
+    left.repoRoot === right.repoRoot &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
   );
 }
@@ -1588,6 +1623,12 @@ function normalizePersistedDraftThreads(
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         startFromOrigin,
+        battleId:
+          typeof candidateDraftThread.battleId === "string"
+            ? (candidateDraftThread.battleId as BattleId)
+            : null,
+        repoRoot:
+          typeof candidateDraftThread.repoRoot === "string" ? candidateDraftThread.repoRoot : null,
         promotedTo,
       };
     }
@@ -1634,6 +1675,8 @@ function normalizePersistedDraftThreads(
           worktreePath: null,
           envMode: "local",
           startFromOrigin: false,
+          battleId: null,
+          repoRoot: null,
           promotedTo: null,
         };
       } else if (
@@ -2237,6 +2280,8 @@ function toHydratedDraftThreadState(
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
     startFromOrigin: persistedDraftThread.startFromOrigin,
+    battleId: persistedDraftThread.battleId,
+    repoRoot: persistedDraftThread.repoRoot,
     promotedTo: persistedDraftThread.promotedTo
       ? scopeThreadRef(
           persistedDraftThread.promotedTo.environmentId as EnvironmentId,
@@ -2455,6 +2500,18 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               options.startFromOrigin === undefined
                 ? existing.startFromOrigin
                 : options.startFromOrigin;
+            const nextBattleId =
+              options.battleId === undefined
+                ? projectChanged
+                  ? null
+                  : existing.battleId
+                : options.battleId;
+            const nextRepoRoot =
+              options.repoRoot === undefined
+                ? projectChanged
+                  ? null
+                  : existing.repoRoot
+                : options.repoRoot;
             const nextDraftThread: DraftThreadState = {
               threadId: existing.threadId,
               environmentId: nextProjectRef.environmentId,
@@ -2471,6 +2528,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               envMode:
                 options.envMode ?? (nextWorktreePath ? "worktree" : (existing.envMode ?? "local")),
               startFromOrigin: nextStartFromOrigin,
+              battleId: nextBattleId,
+              repoRoot: nextRepoRoot,
               promotedTo: existing.promotedTo ?? null,
             };
             const isUnchanged =
@@ -2484,6 +2543,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&
               nextDraftThread.startFromOrigin === existing.startFromOrigin &&
+              nextDraftThread.battleId === existing.battleId &&
+              nextDraftThread.repoRoot === existing.repoRoot &&
               scopedThreadRefsEqual(nextDraftThread.promotedTo, existing.promotedTo);
             if (isUnchanged) {
               return state;

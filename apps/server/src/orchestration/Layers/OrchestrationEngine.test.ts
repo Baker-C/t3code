@@ -133,6 +133,7 @@ describe("OrchestrationEngine", () => {
           deletedAt: null,
         },
       ],
+      battles: [],
       threads: [
         {
           id: ThreadId.make("thread-bootstrap"),
@@ -186,6 +187,7 @@ describe("OrchestrationEngine", () => {
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,
               projects: [],
+              battles: [],
               threads: [],
               updatedAt: projectionSnapshot.updatedAt,
             }),
@@ -193,6 +195,7 @@ describe("OrchestrationEngine", () => {
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,
               projects: [],
+              battles: [],
               threads: [],
               updatedAt: projectionSnapshot.updatedAt,
             }),
@@ -201,8 +204,10 @@ describe("OrchestrationEngine", () => {
           getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
+          getBattleById: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+          getWorktreeOccupancy: () => Effect.succeed({ threads: [], projects: [] }),
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),

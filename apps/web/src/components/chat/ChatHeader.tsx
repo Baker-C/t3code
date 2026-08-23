@@ -1,6 +1,8 @@
 import {
+  type BattleId,
   type EnvironmentId,
   type EditorId,
+  type ProjectId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
@@ -29,6 +31,7 @@ import ProjectScriptsControl, {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
+import { BattleBreadcrumbItem } from "./BattleBreadcrumbItem";
 import { OpenInPicker } from "./OpenInPicker";
 import { useRemoteOpenState, type RemoteOpenMode } from "../../remoteOpen";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -47,6 +50,11 @@ import { cn } from "~/lib/utils";
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
+  /** Set while the thread belongs to a battle; adds the battle crumb. */
+  activeThreadBattleId?: BattleId | null;
+  activeProjectId?: ProjectId | undefined;
+  activeThreadWorktreePath?: string | null;
+  activeThreadBranch?: string | null;
   draftId?: DraftId;
   activeThreadTitle: string;
   /** Drafts have no server thread yet, so the title carries no action menu. */
@@ -110,6 +118,10 @@ export function shouldShowOpenInPicker(input: {
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
+  activeThreadBattleId,
+  activeProjectId,
+  activeThreadWorktreePath,
+  activeThreadBranch,
   draftId,
   activeThreadTitle,
   isServerThread,
@@ -260,6 +272,15 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbItem>
             <WorkspaceBreadcrumbSeparator />
           </>
+        ) : null}
+        {activeThreadBattleId != null && activeProjectId !== undefined ? (
+          <BattleBreadcrumbItem
+            environmentId={activeThreadEnvironmentId}
+            projectId={activeProjectId}
+            battleId={activeThreadBattleId}
+            activeWorktreePath={activeThreadWorktreePath ?? null}
+            activeBranch={activeThreadBranch ?? null}
+          />
         ) : null}
         <WorkspaceBreadcrumbItem current className="flex-1">
           {renamingTitle !== null ? (

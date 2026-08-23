@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { BattleId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { OrchestrationShellSnapshot, OrchestrationShellStreamEvent } from "@t3tools/contracts";
 
 import { applyShellStreamEvent } from "./shellReducer.ts";
@@ -9,6 +9,7 @@ const baseSnapshot: OrchestrationShellSnapshot = {
   snapshotSequence: 0,
   projects: [],
   threads: [],
+  battles: [],
   updatedAt: "2026-04-01T00:00:00.000Z",
 };
 
@@ -43,6 +44,20 @@ const stubThread = {
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,
   session: null,
+} as const;
+
+const stubBattle = {
+  id: BattleId.make("battle-1"),
+  projectId: ProjectId.make("project-1"),
+  title: "Test Battle",
+  goal: null,
+  slug: "test-battle",
+  phase: "scoping" as const,
+  victoryConditions: [],
+  defeatedAt: null,
+  createdAt: "2026-04-01T00:00:00.000Z",
+  updatedAt: "2026-04-01T00:00:00.000Z",
+  deletedAt: null,
 } as const;
 
 describe("applyShellStreamEvent", () => {
@@ -174,6 +189,77 @@ describe("applyShellStreamEvent", () => {
 
       expect(next.threads).toHaveLength(0);
       expect(next.snapshotSequence).toBe(6);
+    });
+  });
+
+  describe("battle-upserted", () => {
+    it("adds a new battle", () => {
+      const event: OrchestrationShellStreamEvent = {
+        kind: "battle-upserted",
+        sequence: 7,
+        battle: stubBattle,
+      };
+
+      const next = applyShellStreamEvent(baseSnapshot, event);
+
+      expect(next.battles).toHaveLength(1);
+      expect(next.battles[0]?.id).toBe("battle-1");
+      expect(next.snapshotSequence).toBe(7);
+    });
+
+    it("updates an existing battle", () => {
+      const snapshotWithBattle: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        battles: [stubBattle],
+      };
+
+      const event: OrchestrationShellStreamEvent = {
+        kind: "battle-upserted",
+        sequence: 8,
+        battle: { ...stubBattle, phase: "fighting" },
+      };
+
+      const next = applyShellStreamEvent(snapshotWithBattle, event);
+
+      expect(next.battles).toHaveLength(1);
+      expect(next.battles[0]?.phase).toBe("fighting");
+    });
+
+    it("ignores stale battle upserts without mutating the snapshot", () => {
+      const snapshotWithBattle: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        snapshotSequence: 9,
+        battles: [stubBattle],
+      };
+
+      const next = applyShellStreamEvent(snapshotWithBattle, {
+        kind: "battle-upserted",
+        sequence: 9,
+        battle: { ...stubBattle, title: "Stale Title" },
+      });
+
+      expect(next).toBe(snapshotWithBattle);
+      expect(next.battles[0]?.title).toBe("Test Battle");
+    });
+  });
+
+  describe("battle-removed", () => {
+    it("removes a battle by id", () => {
+      const snapshotWithBattle: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        battles: [stubBattle],
+      };
+
+      const event: OrchestrationShellStreamEvent = {
+        kind: "battle-removed",
+        sequence: 10,
+        battleId: BattleId.make("battle-1"),
+      };
+
+      const next = applyShellStreamEvent(snapshotWithBattle, event);
+
+      expect(next.battles).toHaveLength(0);
+      expect(next.snapshotSequence).toBe(10);
     });
   });
 

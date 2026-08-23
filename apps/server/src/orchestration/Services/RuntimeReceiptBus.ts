@@ -14,7 +14,14 @@
  *
  * @module RuntimeReceiptBus
  */
-import { CheckpointRef, IsoDateTime, NonNegativeInt, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  BattleId,
+  CheckpointRef,
+  IsoDateTime,
+  NonNegativeInt,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -49,10 +56,28 @@ export const TurnProcessingQuiescedReceipt = Schema.Struct({
 });
 export type TurnProcessingQuiescedReceipt = typeof TurnProcessingQuiescedReceipt.Type;
 
+/**
+ * One pass of the retirement reactor over a defeated battle's worktrees.
+ * Every candidate path lands in exactly one bucket, so a test can assert the
+ * whole outcome from a single receipt.
+ */
+export const BattleWorktreeRetirementSettledReceipt = Schema.Struct({
+  type: Schema.Literal("battle.worktree-retirement.settled"),
+  battleId: BattleId,
+  retired: Schema.Array(Schema.String),
+  skippedShared: Schema.Array(Schema.String),
+  skippedDirty: Schema.Array(Schema.String),
+  skippedFailed: Schema.Array(Schema.String),
+  createdAt: IsoDateTime,
+});
+export type BattleWorktreeRetirementSettledReceipt =
+  typeof BattleWorktreeRetirementSettledReceipt.Type;
+
 export const OrchestrationRuntimeReceipt = Schema.Union([
   CheckpointBaselineCapturedReceipt,
   CheckpointDiffFinalizedReceipt,
   TurnProcessingQuiescedReceipt,
+  BattleWorktreeRetirementSettledReceipt,
 ]);
 export type OrchestrationRuntimeReceipt = typeof OrchestrationRuntimeReceipt.Type;
 

@@ -1,8 +1,10 @@
 import {
+  battleLinesDrawn,
   EventId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type VictoryCondition,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -11,8 +13,14 @@ import type * as PlatformError from "effect/PlatformError";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
+  listThreadsByBattleId,
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
+  requireBattle,
+  requireBattleAbsent,
+  requireBattleCondition,
+  requireBattleConditionAbsent,
+  requireBattleNotDefeated,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -28,6 +36,22 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 // window is a failed/stale start, not pending work. Mirrors the client's
 // QUEUED_TURN_START_GRACE_MS in client-runtime threadSettled.ts.
 const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+
+const BATTLE_SLUG_MAX_CHARS = 48;
+
+/**
+ * The battle's immutable slug, derived once from its creation title. Battle
+ * threads seed branch names from it, so a later rename must never move it.
+ */
+function deriveBattleSlug(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, BATTLE_SLUG_MAX_CHARS)
+    .replace(/-+$/g, "");
+  return slug.length > 0 ? slug : "battle";
+}
 
 /**
  * Blocked-on-you work derived from the thread's retained activities: an
@@ -349,6 +373,301 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "battle.create": {
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      yield* requireBattleAbsent({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.created",
+        payload: {
+          battleId: command.battleId,
+          projectId: command.projectId,
+          title: command.title,
+          goal: command.goal ?? null,
+          slug: deriveBattleSlug(command.title),
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "battle.meta.update": {
+      yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.meta-updated",
+        payload: {
+          battleId: command.battleId,
+          ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.goal !== undefined ? { goal: command.goal } : {}),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.condition.add": {
+      const battle = yield* requireBattleNotDefeated({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      yield* requireBattleConditionAbsent({
+        command,
+        battle,
+        conditionId: command.conditionId,
+      });
+      const occurredAt = yield* nowIso;
+      const condition: VictoryCondition = {
+        id: command.conditionId,
+        title: command.title,
+        state: command.state ?? "unscoped",
+        sizeScore: command.sizeScore ?? null,
+        sizeProvisional: command.sizeProvisional ?? false,
+        ownerThreadId: command.ownerThreadId ?? null,
+        strikeReason: null,
+        updatedByThreadId: command.updatedByThreadId ?? null,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+      };
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.condition-added",
+        payload: {
+          battleId: command.battleId,
+          condition,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.condition.update": {
+      const battle = yield* requireBattleNotDefeated({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      yield* requireBattleCondition({
+        readModel,
+        command,
+        battle,
+        conditionId: command.conditionId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.condition-updated",
+        payload: {
+          battleId: command.battleId,
+          conditionId: command.conditionId,
+          ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.state !== undefined ? { state: command.state } : {}),
+          ...(command.sizeScore !== undefined ? { sizeScore: command.sizeScore } : {}),
+          ...(command.sizeProvisional !== undefined
+            ? { sizeProvisional: command.sizeProvisional }
+            : {}),
+          ...(command.ownerThreadId !== undefined ? { ownerThreadId: command.ownerThreadId } : {}),
+          updatedByThreadId: command.updatedByThreadId ?? null,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.condition.strike": {
+      const battle = yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      yield* requireBattleCondition({
+        readModel,
+        command,
+        battle,
+        conditionId: command.conditionId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.condition-struck",
+        payload: {
+          battleId: command.battleId,
+          conditionId: command.conditionId,
+          strikeReason: command.strikeReason,
+          updatedByThreadId: command.updatedByThreadId ?? null,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.declare-fighting": {
+      const battle = yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      if (battle.phase !== "scoping") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' is '${battle.phase}' and is already past scoping.`,
+        });
+      }
+      if (!battleLinesDrawn(battle)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' has not drawn its battle lines: every victory condition must be scoped or descoped, and at least one must survive.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.phase-changed",
+        payload: {
+          battleId: command.battleId,
+          phase: "fighting",
+          retireWorktrees: null,
+          defeatedAt: null,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.declare-defeat": {
+      const battle = yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      if (battle.phase !== "fighting") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' is '${battle.phase}' and cannot be defeated before it is fought.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.phase-changed",
+        payload: {
+          battleId: command.battleId,
+          phase: "defeated",
+          retireWorktrees: command.retireWorktrees,
+          defeatedAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.reopen": {
+      const battle = yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      if (battle.phase !== "defeated") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' is '${battle.phase}' and is not defeated.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.phase-changed",
+        payload: {
+          battleId: command.battleId,
+          phase: "fighting",
+          retireWorktrees: null,
+          defeatedAt: null,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.delete": {
+      yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      // No cascade in v1: a battle is only ever deleted once its threads have
+      // left, so deleting can never orphan or destroy thread history.
+      const memberThreads = listThreadsByBattleId(readModel, command.battleId).filter(
+        (thread) => thread.deletedAt === null,
+      );
+      if (memberThreads.length > 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' still has ${memberThreads.length} member thread(s) and cannot be deleted.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.deleted",
+        payload: {
+          battleId: command.battleId,
+          deletedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.create": {
       yield* requireProject({
         readModel,
@@ -360,6 +679,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      // battleId is immutable once stamped, so enlistment is validated here
+      // and nowhere else: a defeated battle cannot gain new members.
+      if (command.battleId != null) {
+        yield* requireBattleNotDefeated({
+          readModel,
+          command,
+          battleId: command.battleId,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -371,6 +699,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          ...(command.battleId !== undefined ? { battleId: command.battleId } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -378,6 +707,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           branch: command.branch,
           worktreePath: command.worktreePath,
           createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.turn-queue.update": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.turn-queue-updated",
+        payload: {
+          threadId: command.threadId,
+          turnQueued: command.turnQueued,
           updatedAt: command.createdAt,
         },
       };
