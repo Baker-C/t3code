@@ -2812,21 +2812,21 @@ describe("ProviderCommandReactor", () => {
     expect(resolvedActivity).toBeUndefined();
   });
 
-  it("surfaces non-resumable provider user-input callbacks as stale failures", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
-    harness.respondToUserInput.mockImplementation(() =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: ProviderDriverKind.make("claudeAgent"),
-          method: "item/tool/respondToUserInput",
-          detail: "Unknown pending Codex user input request: user-input-request-1",
-        }),
-      ),
-    );
+  effectIt.live("surfaces non-resumable provider user-input callbacks as stale failures", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const now = "2026-01-01T00:00:00.000Z";
+      harness.respondToUserInput.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: ProviderDriverKind.make("claudeAgent"),
+            method: "item/tool/respondToUserInput",
+            detail: "Unknown pending Codex user input request: user-input-request-1",
+          }),
+        ),
+      );
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-for-user-input-error"),
         threadId: ThreadId.make("thread-1"),
@@ -2840,11 +2840,9 @@ describe("ProviderCommandReactor", () => {
           updatedAt: now,
         },
         createdAt: now,
-      }),
-    );
+      });
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.activity.append",
         commandId: CommandId.make("cmd-user-input-requested"),
         threadId: ThreadId.make("thread-1"),
@@ -2873,11 +2871,9 @@ describe("ProviderCommandReactor", () => {
           createdAt: now,
         },
         createdAt: now,
-      }),
-    );
+      });
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.make("cmd-user-input-respond-stale"),
         threadId: ThreadId.make("thread-1"),
@@ -2886,40 +2882,42 @@ describe("ProviderCommandReactor", () => {
           sandbox_mode: "workspace-write",
         },
         createdAt: now,
-      }),
-    );
+      });
 
-    await waitFor(async () => {
-      const readModel = await harness.readModel();
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const readModel = await harness.readModel();
+          const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+          if (!thread) return false;
+          return thread.activities.some(
+            (activity) => activity.kind === "provider.user-input.respond.failed",
+          );
+        }),
+      );
+
+      const readModel = yield* Effect.promise(() => harness.readModel());
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      if (!thread) return false;
-      return thread.activities.some(
+      expect(thread).toBeDefined();
+
+      const failureActivity = thread?.activities.find(
         (activity) => activity.kind === "provider.user-input.respond.failed",
       );
-    });
+      expect(failureActivity).toBeDefined();
+      expect(failureActivity?.payload).toMatchObject({
+        requestId: "user-input-request-1",
+        detail: expect.stringContaining("Stale pending user-input request: user-input-request-1"),
+      });
 
-    const readModel = await harness.readModel();
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread).toBeDefined();
-
-    const failureActivity = thread?.activities.find(
-      (activity) => activity.kind === "provider.user-input.respond.failed",
-    );
-    expect(failureActivity).toBeDefined();
-    expect(failureActivity?.payload).toMatchObject({
-      requestId: "user-input-request-1",
-      detail: expect.stringContaining("Stale pending user-input request: user-input-request-1"),
-    });
-
-    const resolvedActivity = thread?.activities.find(
-      (activity) =>
-        activity.kind === "user-input.resolved" &&
-        typeof activity.payload === "object" &&
-        activity.payload !== null &&
-        (activity.payload as Record<string, unknown>).requestId === "user-input-request-1",
-    );
-    expect(resolvedActivity).toBeUndefined();
-  });
+      const resolvedActivity = thread?.activities.find(
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "user-input-request-1",
+      );
+      expect(resolvedActivity).toBeUndefined();
+    }),
+  );
 
   it("reacts to thread.session.stop by stopping provider session and clearing thread session state", async () => {
     const harness = await createHarness();
@@ -2962,40 +2960,42 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     expect(thread?.session?.activeTurnId).toBeNull();
   });
-  it("restores a retired battle worktree from the stored branch on the next turn", async () => {
-    const listRefs = vi.fn(() =>
-      Effect.succeed({
-        refs: [
-          {
-            name: "battle/streaming-diff",
-            current: false,
-            isDefault: false,
-            isRemote: false,
-            worktreePath: null,
+  effectIt.live("restores a retired battle worktree from the stored branch on the next turn", () =>
+    Effect.gen(function* () {
+      const listRefs = vi.fn(() =>
+        Effect.succeed({
+          refs: [
+            {
+              name: "battle/streaming-diff",
+              current: false,
+              isDefault: false,
+              isRemote: false,
+              worktreePath: null,
+            },
+          ],
+          isRepo: true,
+          hasPrimaryRemote: false,
+          nextCursor: null,
+          totalCount: 1,
+        }),
+      );
+      const createWorktree = vi.fn((_input: { readonly cwd: string; readonly refName: string }) =>
+        Effect.succeed({
+          worktree: {
+            path: "/tmp/worktrees/battle-streaming-diff",
+            refName: "battle/streaming-diff",
           },
-        ],
-        isRepo: true,
-        hasPrimaryRemote: false,
-        nextCursor: null,
-        totalCount: 1,
-      }),
-    );
-    const createWorktree = vi.fn((_input: { readonly cwd: string; readonly refName: string }) =>
-      Effect.succeed({
-        worktree: {
-          path: "/tmp/worktrees/battle-streaming-diff",
-          refName: "battle/streaming-diff",
-        },
-      }),
-    );
-    const harness = await createHarness({
-      battleThreadBranch: "battle/streaming-diff",
-      gitWorkflowOverrides: { listRefs, createWorktree } as never,
-    });
-    const now = "2026-01-01T00:00:00.000Z";
+        }),
+      );
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          battleThreadBranch: "battle/streaming-diff",
+          gitWorkflowOverrides: { listRefs, createWorktree } as never,
+        }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-reprovision"),
         threadId: ThreadId.make("thread-1"),
@@ -3008,52 +3008,54 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
-      }),
-    );
+      });
 
-    await waitFor(() => harness.startSession.mock.calls.length === 1);
-    expect(createWorktree).toHaveBeenCalledTimes(1);
-    expect(createWorktree.mock.calls[0]?.[0]).toMatchObject({
-      cwd: "/tmp/provider-project",
-      refName: "battle/streaming-diff",
-    });
-    // The restored worktree is the turn's cwd, not the project root.
-    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/worktrees/battle-streaming-diff",
-    });
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 1));
+      expect(createWorktree).toHaveBeenCalledTimes(1);
+      expect(createWorktree.mock.calls[0]?.[0]).toMatchObject({
+        cwd: "/tmp/provider-project",
+        refName: "battle/streaming-diff",
+      });
+      // The restored worktree is the turn's cwd, not the project root.
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+        cwd: "/tmp/worktrees/battle-streaming-diff",
+      });
 
-    const readModel = await harness.readModel();
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.worktreePath).toBe("/tmp/worktrees/battle-streaming-diff");
-  });
+      const readModel = yield* Effect.promise(() => harness.readModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.worktreePath).toBe("/tmp/worktrees/battle-streaming-diff");
+    }),
+  );
 
-  it("reuses an existing worktree when the battle branch already has one", async () => {
-    const listRefs = vi.fn(() =>
-      Effect.succeed({
-        refs: [
-          {
-            name: "battle/streaming-diff",
-            current: false,
-            isDefault: false,
-            isRemote: false,
-            worktreePath: "/tmp/worktrees/already-there",
-          },
-        ],
-        isRepo: true,
-        hasPrimaryRemote: false,
-        nextCursor: null,
-        totalCount: 1,
-      }),
-    );
-    const createWorktree = vi.fn(() => Effect.die("createWorktree should not be called"));
-    const harness = await createHarness({
-      battleThreadBranch: "battle/streaming-diff",
-      gitWorkflowOverrides: { listRefs, createWorktree } as never,
-    });
-    const now = "2026-01-01T00:00:00.000Z";
+  effectIt.live("reuses an existing worktree when the battle branch already has one", () =>
+    Effect.gen(function* () {
+      const listRefs = vi.fn(() =>
+        Effect.succeed({
+          refs: [
+            {
+              name: "battle/streaming-diff",
+              current: false,
+              isDefault: false,
+              isRemote: false,
+              worktreePath: "/tmp/worktrees/already-there",
+            },
+          ],
+          isRepo: true,
+          hasPrimaryRemote: false,
+          nextCursor: null,
+          totalCount: 1,
+        }),
+      );
+      const createWorktree = vi.fn(() => Effect.die("createWorktree should not be called"));
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          battleThreadBranch: "battle/streaming-diff",
+          gitWorkflowOverrides: { listRefs, createWorktree } as never,
+        }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-reuse"),
         threadId: ThreadId.make("thread-1"),
@@ -3066,35 +3068,37 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
-      }),
-    );
+      });
 
-    await waitFor(() => harness.startSession.mock.calls.length === 1);
-    expect(createWorktree).not.toHaveBeenCalled();
-    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
-      cwd: "/tmp/worktrees/already-there",
-    });
-  });
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 1));
+      expect(createWorktree).not.toHaveBeenCalled();
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+        cwd: "/tmp/worktrees/already-there",
+      });
+    }),
+  );
 
-  it("refuses the turn when the battle branch no longer exists", async () => {
-    const listRefs = vi.fn(() =>
-      Effect.succeed({
-        refs: [],
-        isRepo: true,
-        hasPrimaryRemote: false,
-        nextCursor: null,
-        totalCount: 0,
-      }),
-    );
-    const createWorktree = vi.fn(() => Effect.die("createWorktree should not be called"));
-    const harness = await createHarness({
-      battleThreadBranch: "battle/deleted-elsewhere",
-      gitWorkflowOverrides: { listRefs, createWorktree } as never,
-    });
-    const now = "2026-01-01T00:00:00.000Z";
+  effectIt.live("refuses the turn when the battle branch no longer exists", () =>
+    Effect.gen(function* () {
+      const listRefs = vi.fn(() =>
+        Effect.succeed({
+          refs: [],
+          isRepo: true,
+          hasPrimaryRemote: false,
+          nextCursor: null,
+          totalCount: 0,
+        }),
+      );
+      const createWorktree = vi.fn(() => Effect.die("createWorktree should not be called"));
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          battleThreadBranch: "battle/deleted-elsewhere",
+          gitWorkflowOverrides: { listRefs, createWorktree } as never,
+        }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-missing-branch"),
         threadId: ThreadId.make("thread-1"),
@@ -3107,21 +3111,24 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
-      }),
-    );
+      });
 
-    await waitFor(async () => {
-      const readModel = await harness.readModel();
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return (
-        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ===
-        true
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const readModel = await harness.readModel();
+          const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+          return (
+            thread?.activities.some(
+              (activity) => activity.kind === "provider.turn.start.failed",
+            ) === true
+          );
+        }),
       );
-    });
 
-    expect(createWorktree).not.toHaveBeenCalled();
-    // Refusing beats silently running the agent in the project root.
-    expect(harness.startSession).not.toHaveBeenCalled();
-    expect(harness.sendTurn).not.toHaveBeenCalled();
-  });
+      expect(createWorktree).not.toHaveBeenCalled();
+      // Refusing beats silently running the agent in the project root.
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    }),
+  );
 });
