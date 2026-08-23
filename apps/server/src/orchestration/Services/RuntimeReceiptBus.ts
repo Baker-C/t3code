@@ -73,11 +73,56 @@ export const BattleWorktreeRetirementSettledReceipt = Schema.Struct({
 export type BattleWorktreeRetirementSettledReceipt =
   typeof BattleWorktreeRetirementSettledReceipt.Type;
 
+/**
+ * One battle gained its orchestrator thread. `source` separates the reactor
+ * reacting to a fresh `battle.created` from the startup pass that adopts a
+ * battle predating orchestrators.
+ */
+export const BattleOrchestratorReadyReceipt = Schema.Struct({
+  type: Schema.Literal("battle.orchestrator.ready"),
+  battleId: BattleId,
+  orchestratorThreadId: ThreadId,
+  source: Schema.Literals(["created", "backfilled"]),
+  createdAt: IsoDateTime,
+});
+export type BattleOrchestratorReadyReceipt = typeof BattleOrchestratorReadyReceipt.Type;
+
+/** The startup backfill finished its single pass over existing battles. */
+export const BattleOrchestratorBackfillSettledReceipt = Schema.Struct({
+  type: Schema.Literal("battle.orchestrator.backfill-settled"),
+  adopted: Schema.Array(BattleId),
+  createdAt: IsoDateTime,
+});
+export type BattleOrchestratorBackfillSettledReceipt =
+  typeof BattleOrchestratorBackfillSettledReceipt.Type;
+
+/**
+ * One examined member-turn settle. Every outcome is named so a test can wait
+ * on the exact point a report-back guard fired instead of proving a negative
+ * with a timeout.
+ */
+export const BattleOrchestratorReportSettledReceipt = Schema.Struct({
+  type: Schema.Literal("battle.orchestrator.report-settled"),
+  battleId: BattleId,
+  // The member whose turn settled, or null when the orchestrator's own turn
+  // ending is what triggered the flush.
+  memberThreadId: Schema.NullOr(ThreadId),
+  outcome: Schema.Literals(["delivered", "buffered", "ignored"]),
+  // The members covered by a delivered report, oldest reply first.
+  deliveredFor: Schema.Array(ThreadId),
+  createdAt: IsoDateTime,
+});
+export type BattleOrchestratorReportSettledReceipt =
+  typeof BattleOrchestratorReportSettledReceipt.Type;
+
 export const OrchestrationRuntimeReceipt = Schema.Union([
   CheckpointBaselineCapturedReceipt,
   CheckpointDiffFinalizedReceipt,
   TurnProcessingQuiescedReceipt,
   BattleWorktreeRetirementSettledReceipt,
+  BattleOrchestratorReadyReceipt,
+  BattleOrchestratorBackfillSettledReceipt,
+  BattleOrchestratorReportSettledReceipt,
 ]);
 export type OrchestrationRuntimeReceipt = typeof OrchestrationRuntimeReceipt.Type;
 

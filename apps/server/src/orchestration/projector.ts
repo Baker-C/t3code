@@ -22,6 +22,7 @@ import {
   BattleCreatedPayload,
   BattleDeletedPayload,
   BattleMetaUpdatedPayload,
+  BattleOrchestratorSetPayload,
   BattlePhaseChangedPayload,
   MessageSentPayloadSchema,
   ProjectCreatedPayload,
@@ -331,6 +332,7 @@ export function projectEvent(
             slug: payload.slug,
             phase: "scoping",
             victoryConditions: [],
+            orchestratorThreadId: null,
             defeatedAt: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -440,6 +442,22 @@ export function projectEvent(
           battles: updateBattle(nextBase.battles, payload.battleId, {
             phase: payload.phase,
             defeatedAt: payload.defeatedAt,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "battle.orchestrator-set":
+      return decodeForEvent(
+        BattleOrchestratorSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattle(nextBase.battles, payload.battleId, {
+            orchestratorThreadId: payload.orchestratorThreadId,
             updatedAt: payload.updatedAt,
           }),
         })),

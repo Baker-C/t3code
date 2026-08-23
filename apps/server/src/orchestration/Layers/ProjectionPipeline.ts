@@ -569,6 +569,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             slug: event.payload.slug,
             phase: "scoping",
             victoryConditions: [],
+            orchestratorThreadId: null,
             defeatedAt: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -587,6 +588,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.goal !== undefined ? { goal: event.payload.goal } : {}),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.orchestrator-set": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            orchestratorThreadId: event.payload.orchestratorThreadId,
             updatedAt: event.payload.updatedAt,
           });
           return;
