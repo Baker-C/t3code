@@ -18,6 +18,7 @@ function makeBattle(id: string, createdAt = "2026-04-01T00:00:00.000Z"): Orchest
     slug: `battle-${id}`,
     phase: "scoping",
     victoryConditions: [],
+    orchestratorThreadId: null,
     defeatedAt: null,
     createdAt,
     updatedAt: createdAt,

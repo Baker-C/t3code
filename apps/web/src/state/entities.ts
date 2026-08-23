@@ -116,6 +116,11 @@ export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
   return useAtomValue(environmentServerConfigsAtom);
 }
 
+/**
+ * Every listable thread. Battle orchestrator threads are filtered out by the
+ * shell atoms, so the sidebar, the inbox, the command palette and every other
+ * list inherit that without repeating the rule.
+ */
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(environmentThreadShells.threadShellsAtom);
 }
@@ -124,6 +129,7 @@ export function useAllEnvironmentShellsBootstrapped(): boolean {
   return useAtomValue(allEnvironmentShellsBootstrappedAtom);
 }
 
+/** Listable threads of the given projects, orchestrators excluded. */
 export function useThreadShellsForProjectRefs(
   refs: ReadonlyArray<ScopedProjectRef>,
 ): ReadonlyArray<EnvironmentThreadShell> {
@@ -134,6 +140,11 @@ export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | n
   return useAtomValue(ref === null ? EMPTY_PROJECT_ATOM : environmentProjects.projectAtom(ref));
 }
 
+/**
+ * Resolves one thread by ref, which is what a direct URL does. Orchestrator
+ * threads resolve here even though no list shows them: the URL is the escape
+ * hatch, not a surface.
+ */
 export function useThreadShell(ref: ScopedThreadRef | null): EnvironmentThreadShell | null {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_SHELL_ATOM : environmentThreadShells.threadShellAtom(ref),
