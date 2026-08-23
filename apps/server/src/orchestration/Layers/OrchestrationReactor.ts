@@ -5,6 +5,7 @@ import {
   OrchestrationReactor,
   type OrchestrationReactorShape,
 } from "../Services/OrchestrationReactor.ts";
+import { BattleOrchestratorReactor } from "../Services/BattleOrchestratorReactor.ts";
 import { BattleRetirementReactor } from "../Services/BattleRetirementReactor.ts";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
@@ -18,6 +19,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
   const battleRetirementReactor = yield* BattleRetirementReactor;
+  const battleOrchestratorReactor = yield* BattleOrchestratorReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
@@ -26,6 +28,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* checkpointReactor.start();
     yield* threadDeletionReactor.start();
     yield* battleRetirementReactor.start();
+    yield* battleOrchestratorReactor.start();
     yield* agentAwarenessRelay.start();
   });
 

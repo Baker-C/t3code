@@ -45,6 +45,7 @@ function makeBattle(input: Partial<OrchestrationBattle> = {}): OrchestrationBatt
     slug: input.slug ?? "ship-the-thing",
     phase: input.phase ?? "scoping",
     victoryConditions: input.victoryConditions ?? [],
+    orchestratorThreadId: input.orchestratorThreadId ?? null,
     defeatedAt: input.defeatedAt ?? null,
     createdAt: NOW,
     updatedAt: NOW,
@@ -496,6 +497,63 @@ it.layer(NodeServices.layer)("battle decider", (it) => {
           readModel: makeReadModel({
             battles: [makeBattle({ phase: "defeated", defeatedAt: NOW })],
           }),
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("binds a battle to its orchestrator thread", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "battle.orchestrator.set",
+          commandId: CommandId.make("cmd-orchestrator-set"),
+          battleId: BATTLE_ID,
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel({ battles: [makeBattle()], threadBattleId: BATTLE_ID }),
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("battle.orchestrator-set");
+      if (event?.type === "battle.orchestrator-set") {
+        expect(event.aggregateKind).toBe("battle");
+        expect(event.payload.orchestratorThreadId).toBe(ThreadId.make("thread-1"));
+      }
+    }),
+  );
+
+  it.effect("refuses a second orchestrator on one battle", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decideOrchestrationCommand({
+          command: {
+            type: "battle.orchestrator.set",
+            commandId: CommandId.make("cmd-orchestrator-set-second"),
+            battleId: BATTLE_ID,
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel({
+            battles: [makeBattle({ orchestratorThreadId: ThreadId.make("thread-existing") })],
+            threadBattleId: BATTLE_ID,
+          }),
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("refuses an orchestrator thread that is not a member of the battle", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decideOrchestrationCommand({
+          command: {
+            type: "battle.orchestrator.set",
+            commandId: CommandId.make("cmd-orchestrator-set-outsider"),
+            battleId: BATTLE_ID,
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel({ battles: [makeBattle()], threadBattleId: null }),
         }),
       );
       expect(result._tag).toBe("Failure");
