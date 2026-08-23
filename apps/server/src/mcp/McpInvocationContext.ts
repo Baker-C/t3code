@@ -7,7 +7,12 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview" | "battle";
+/**
+ * `battle-orchestrator` is strictly narrower than `battle`: it is minted only
+ * for the thread a battle names as its orchestrator, and it unlocks the
+ * cross-thread toolkit that reads and writes into sibling member threads.
+ */
+export type McpCapability = "preview" | "battle" | "battle-orchestrator";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;

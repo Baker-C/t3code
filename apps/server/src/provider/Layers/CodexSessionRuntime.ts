@@ -75,14 +75,23 @@ export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | un
 export function mcpToolAvailability(
   threadId: ThreadId,
   appServerArgs: ReadonlyArray<string> | undefined,
-): { readonly browserToolsAvailable: boolean; readonly battleToolsAvailable: boolean } {
+): {
+  readonly browserToolsAvailable: boolean;
+  readonly battleToolsAvailable: boolean;
+  readonly battleOrchestratorToolsAvailable: boolean;
+} {
   if (!hasConfiguredMcpServer(appServerArgs)) {
-    return { browserToolsAvailable: false, battleToolsAvailable: false };
+    return {
+      browserToolsAvailable: false,
+      battleToolsAvailable: false,
+      battleOrchestratorToolsAvailable: false,
+    };
   }
   const capabilities = McpProviderSession.readMcpProviderSession(threadId)?.capabilities;
   return {
     browserToolsAvailable: capabilities?.includes("preview") ?? true,
     battleToolsAvailable: capabilities?.includes("battle") ?? false,
+    battleOrchestratorToolsAvailable: capabilities?.includes("battle-orchestrator") ?? false,
   };
 }
 
@@ -363,6 +372,7 @@ function buildCodexCollaborationMode(input: {
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly browserToolsAvailable?: boolean;
   readonly battleToolsAvailable?: boolean;
+  readonly battleOrchestratorToolsAvailable?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -379,6 +389,7 @@ function buildCodexCollaborationMode(input: {
         { model, reasoningEffort },
         input.browserToolsAvailable ?? true,
         input.battleToolsAvailable ?? false,
+        input.battleOrchestratorToolsAvailable ?? false,
       ),
     },
   };
@@ -400,6 +411,8 @@ export function buildTurnStartParams(input: {
   readonly browserToolsAvailable?: boolean;
   /** Defaults to false: only battle threads are ever granted these tools. */
   readonly battleToolsAvailable?: boolean;
+  /** Defaults to false: only a battle's orchestrator thread gets these tools. */
+  readonly battleOrchestratorToolsAvailable?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -422,6 +435,7 @@ export function buildTurnStartParams(input: {
     ...(input.effort ? { effort: input.effort } : {}),
     browserToolsAvailable: input.browserToolsAvailable ?? true,
     battleToolsAvailable: input.battleToolsAvailable ?? false,
+    battleOrchestratorToolsAvailable: input.battleOrchestratorToolsAvailable ?? false,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({

@@ -369,6 +369,54 @@ describe("T3 battle developer instructions", () => {
   });
 });
 
+describe("T3 battle orchestrator developer instructions", () => {
+  it("describes the cross-thread tools in both modes when the capability is granted", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(false, true, true),
+      codexPlanModeDeveloperInstructions(false, true, true),
+    ]) {
+      NodeAssert.match(instructions, /## T3 Code battle orchestration/);
+      NodeAssert.match(instructions, /battle_thread_send/);
+      NodeAssert.match(instructions, /battle_thread_read/);
+      // The async reply model is the thing the agent most needs to be told.
+      NodeAssert.match(instructions, /do not poll for it/);
+      // The battle block rides along; an orchestrator is still in a battle.
+      NodeAssert.match(instructions, /## T3 Code battles/);
+    }
+  });
+
+  it("omits the orchestrator block for a plain battle thread", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(false, true),
+      codexPlanModeDeveloperInstructions(false, true),
+      buildCodexDeveloperInstructions(
+        "default",
+        { model: "gpt-5.3-codex", reasoningEffort: "high" },
+        false,
+        true,
+      ),
+    ]) {
+      NodeAssert.match(instructions, /## T3 Code battles/);
+      // Never describe a toolkit this credential would refuse.
+      NodeAssert.doesNotMatch(instructions, /## T3 Code battle orchestration/);
+      NodeAssert.doesNotMatch(instructions, /battle_thread_send/);
+      NodeAssert.doesNotMatch(instructions, /battle_thread_read/);
+    }
+  });
+
+  it("carries the orchestrator flag through buildCodexDeveloperInstructions", () => {
+    const instructions = buildCodexDeveloperInstructions(
+      "plan",
+      { model: "gpt-5.3-codex", reasoningEffort: "high" },
+      false,
+      true,
+      true,
+    );
+
+    NodeAssert.match(instructions, /battle_thread_send/);
+  });
+});
+
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);
@@ -684,7 +732,9 @@ describe("openCodexThread", () => {
 
 describe("mcpToolAvailability", () => {
   const threadId = ThreadId.make("thread-mcp-availability");
-  const setCapabilities = (capabilities: ReadonlyArray<"preview" | "battle">) =>
+  const setCapabilities = (
+    capabilities: ReadonlyArray<"preview" | "battle" | "battle-orchestrator">,
+  ) =>
     setMcpProviderSession({
       environmentId: EnvironmentId.make("environment-1"),
       threadId,
@@ -701,6 +751,7 @@ describe("mcpToolAvailability", () => {
     NodeAssert.deepEqual(mcpToolAvailability(threadId, undefined), {
       browserToolsAvailable: false,
       battleToolsAvailable: false,
+      battleOrchestratorToolsAvailable: false,
     });
     clearMcpProviderSession(threadId);
   });
@@ -710,6 +761,17 @@ describe("mcpToolAvailability", () => {
     NodeAssert.deepEqual(mcpToolAvailability(threadId, mcpArgs), {
       browserToolsAvailable: false,
       battleToolsAvailable: true,
+      battleOrchestratorToolsAvailable: false,
+    });
+    clearMcpProviderSession(threadId);
+  });
+
+  it("reports the orchestrator toolkit only when the credential granted it", () => {
+    setCapabilities(["battle", "battle-orchestrator"]);
+    NodeAssert.deepEqual(mcpToolAvailability(threadId, mcpArgs), {
+      browserToolsAvailable: false,
+      battleToolsAvailable: true,
+      battleOrchestratorToolsAvailable: true,
     });
     clearMcpProviderSession(threadId);
   });
@@ -719,6 +781,7 @@ describe("mcpToolAvailability", () => {
     NodeAssert.deepEqual(mcpToolAvailability(threadId, mcpArgs), {
       browserToolsAvailable: true,
       battleToolsAvailable: false,
+      battleOrchestratorToolsAvailable: false,
     });
   });
 });

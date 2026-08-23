@@ -4,6 +4,7 @@ import {
   BattleId,
   EnvironmentId,
   IsoDateTime,
+  type OrchestrationBattle,
   type OrchestrationThreadShell,
   ProjectId,
   ProviderInstanceId,
@@ -54,9 +55,28 @@ const threadShell = (threadId: ThreadId, battleId: BattleId | null): Orchestrati
   hasActionableProposedPlan: false,
 });
 
-// Only `getThreadShellById` is reachable from the registry; every other query
-// dies so a new read shows up as a failing test rather than a silent default.
-const projectionLayer = (battleId: BattleId | null) =>
+const battle = (
+  battleId: BattleId,
+  orchestratorThreadId: ThreadId | null,
+): OrchestrationBattle => ({
+  id: battleId,
+  projectId: ProjectId.make("project-1"),
+  title: "Streaming diffs",
+  goal: null,
+  slug: "streaming-diffs",
+  phase: "scoping",
+  victoryConditions: [],
+  orchestratorThreadId,
+  defeatedAt: null,
+  createdAt: IsoDateTime.make("2026-01-01T00:00:00.000Z"),
+  updatedAt: IsoDateTime.make("2026-01-01T00:00:00.000Z"),
+  deletedAt: null,
+});
+
+// Only the thread and its battle are reachable from the registry; every other
+// query dies so a new read shows up as a failing test rather than a silent
+// default.
+const projectionLayer = (battleId: BattleId | null, orchestratorThreadId: ThreadId | null = null) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getThreadShellById: (threadId) => Effect.succeed(Option.some(threadShell(threadId, battleId))),
     getCommandReadModel: () => Effect.die("unexpected getCommandReadModel"),
@@ -74,7 +94,8 @@ const projectionLayer = (battleId: BattleId | null) =>
     getWorktreeOccupancy: () => Effect.succeed({ threads: [], projects: [] }),
     getFullThreadDiffContext: () => Effect.die("unexpected getFullThreadDiffContext"),
     getThreadDetailById: () => Effect.die("unexpected getThreadDetailById"),
-    getBattleById: () => Effect.die("unexpected getBattleById"),
+    getBattleById: (requestedBattleId) =>
+      Effect.succeed(Option.some(battle(requestedBattleId, orchestratorThreadId))),
     getThreadDetailSnapshot: () => Effect.die("unexpected getThreadDetailSnapshot"),
   });
 
@@ -85,6 +106,7 @@ const makeRegistry = (
     readonly enableBattleTools?: boolean;
     readonly enableAgentBrowserAccess?: boolean;
     readonly battleId?: BattleId | null;
+    readonly orchestratorThreadId?: ThreadId | null;
   },
 ) =>
   McpSessionRegistry.__testing
@@ -97,7 +119,7 @@ const makeRegistry = (
       Effect.provideService(ServerEnvironment.ServerEnvironment, fakeEnvironment),
       Effect.provide(
         Layer.mergeAll(
-          projectionLayer(options?.battleId ?? null),
+          projectionLayer(options?.battleId ?? null, options?.orchestratorThreadId ?? null),
           serverSettingsLayerTest({
             enableAgentBrowserAccess: options?.enableAgentBrowserAccess ?? true,
             enableBattleTools: options?.enableBattleTools ?? false,
@@ -152,6 +174,63 @@ it.effect("grants the battle capability only to battle threads with the setting 
       expect(issued.config.capabilities.includes("battle")).toBe(testCase.expected);
       // Browser access is a separate switch; battle tools never imply preview.
       expect(scope?.capabilities.has("preview")).toBe(true);
+    }
+  }),
+);
+
+it.effect("grants the orchestrator capability only to the battle's orchestrator thread", () =>
+  Effect.gen(function* () {
+    const orchestratorThreadId = ThreadId.make("thread-orchestrator");
+    const memberThreadId = ThreadId.make("thread-member");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const battleId = BattleId.make("battle-orchestrated");
+    const cases = [
+      {
+        name: "the orchestrator itself",
+        threadId: orchestratorThreadId,
+        enableBattleTools: true,
+        orchestratorThreadId,
+        expected: true,
+      },
+      {
+        name: "a member of the same battle",
+        threadId: memberThreadId,
+        enableBattleTools: true,
+        orchestratorThreadId,
+        expected: false,
+      },
+      {
+        name: "a battle with no orchestrator yet",
+        threadId: orchestratorThreadId,
+        enableBattleTools: true,
+        orchestratorThreadId: null,
+        expected: false,
+      },
+      {
+        name: "the orchestrator with battle tools off",
+        threadId: orchestratorThreadId,
+        enableBattleTools: false,
+        orchestratorThreadId,
+        expected: false,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const registry = yield* makeRegistry(() => 1_000, {
+        enableBattleTools: testCase.enableBattleTools,
+        battleId,
+        orchestratorThreadId: testCase.orchestratorThreadId,
+      });
+      const issued = yield* registry.issue({ threadId: testCase.threadId, providerInstanceId });
+      const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      const scope = yield* registry.resolve(token);
+      expect(
+        scope?.capabilities.has("battle-orchestrator"),
+        `${testCase.name} should ${testCase.expected ? "" : "not "}be an orchestrator`,
+      ).toBe(testCase.expected);
+      expect(issued.config.capabilities.includes("battle-orchestrator")).toBe(testCase.expected);
+      // The orchestrator capability never replaces the plain battle one.
+      expect(scope?.capabilities.has("battle")).toBe(testCase.enableBattleTools);
     }
   }),
 );

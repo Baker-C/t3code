@@ -13,8 +13,11 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
-import { BattleToolkitHandlersLive } from "./toolkits/battle/handlers.ts";
-import { BattleToolkit } from "./toolkits/battle/tools.ts";
+import {
+  BattleOrchestratorToolkitHandlersLive,
+  BattleToolkitHandlersLive,
+} from "./toolkits/battle/handlers.ts";
+import { BattleOrchestratorToolkit, BattleToolkit } from "./toolkits/battle/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -227,6 +230,15 @@ export const BattleToolkitRegistrationLive = McpServer.toolkit(BattleToolkit).pi
   Layer.provide(BattleToolkitHandlersLive),
 );
 
+/**
+ * Registered separately from the battle toolkit because it is granted
+ * separately: only a battle's orchestrator thread holds the capability these
+ * handlers demand, and every other session is refused at the handler.
+ */
+export const BattleOrchestratorToolkitRegistrationLive = McpServer.toolkit(
+  BattleOrchestratorToolkit,
+).pipe(Layer.provide(BattleOrchestratorToolkitHandlersLive));
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -237,4 +249,5 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   BattleToolkitRegistrationLive,
+  BattleOrchestratorToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));
