@@ -170,7 +170,11 @@ jobs:
             release/*.exe.blockmap
             release/latest.yml
           fail_on_unmatched_files: true
-          token: ${{ github.token }}
+          # GITHUB_TOKEN cannot create releases on a forked repository, so this
+          # falls back to a RELEASE_TOKEN secret when one is configured. Create a
+          # fine-grained PAT with Contents: read+write on this repo and save it as
+          # the RELEASE_TOKEN secret to make tag-driven publishing fully automatic.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
 
       # A publish failure would otherwise discard a ~10 minute build, so keep the
       # installer retrievable from the run itself.
