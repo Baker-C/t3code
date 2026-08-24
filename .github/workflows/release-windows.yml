@@ -1,0 +1,173 @@
+name: Release (Windows)
+
+# Fork-local release pipeline. Upstream release.yml also builds macOS/Linux,
+# deploys the relay, publishes the CLI to npm, and pushes to AUR, all of which
+# need secrets this fork does not have. This workflow does the one thing the
+# desktop auto-updater needs: build the Windows installer and attach it, its
+# blockmap, and latest.yml to a GitHub Release on this repo.
+#
+# Push a tag to release:  git tag v0.0.34 && git push origin v0.0.34
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example 0.0.34)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  wsl_prebuild:
+    name: Build WSL node-pty prebuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+
+      # Resolve node-pty from apps/server (where it's a dependency) and build its
+      # native binary from source for Linux, so the packaged WSL backend can start.
+      - name: Build node-pty linux-x64 prebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          pty_pkg="$(node -e "console.log(require.resolve('node-pty/package.json', { paths: ['$GITHUB_WORKSPACE/apps/server'] }))")"
+          pty_dir="$(dirname "$pty_pkg")"
+          ( cd "$pty_dir" && npx --yes node-gyp rebuild )
+          mkdir -p wsl-prebuild
+          cp "$pty_dir/build/Release/pty.node" wsl-prebuild/pty.node
+          file wsl-prebuild/pty.node
+
+      - name: Upload node-pty linux-x64 prebuild
+        uses: actions/upload-artifact@v7
+        with:
+          name: wsl-node-pty-x64
+          path: wsl-prebuild/pty.node
+          if-no-files-found: error
+
+  release:
+    name: Build and publish Windows installer
+    needs: wsl_prebuild
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      # Bakes the updater feed into the app, so an installed build looks for new
+      # releases on this repo instead of upstream.
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+      T3CODE_DESKTOP_WSL_PREBUILD: ${{ github.workspace }}\wsl-prebuild\pty.node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - id: meta
+        name: Resolve release version
+        shell: bash
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            raw="${DISPATCH_VERSION}"
+          else
+            raw="${GITHUB_REF_NAME}"
+          fi
+
+          version="${raw#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $raw" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/desktop...
+              - --filter=t3...
+              - --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Download WSL node-pty prebuild
+        uses: actions/download-artifact@v7
+        with:
+          name: wsl-node-pty-x64
+          path: wsl-prebuild
+
+      - name: Install Spectre-mitigated MSVC libs
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "${{ steps.meta.outputs.version }}"
+
+      - name: Build Windows installer
+        run: node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: T3 Code v${{ steps.meta.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ steps.meta.outputs.is_prerelease }}
+          files: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}
