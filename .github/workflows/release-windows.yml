@@ -171,3 +171,16 @@ jobs:
             release/latest.yml
           fail_on_unmatched_files: true
           token: ${{ github.token }}
+
+      # A publish failure would otherwise discard a ~10 minute build, so keep the
+      # installer retrievable from the run itself.
+      - name: Upload installer artifact when publishing fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: t3-code-windows-installer
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+          if-no-files-found: warn
