@@ -460,6 +460,11 @@ export const OrchestrationThread = Schema.Struct({
   // single-thread battle; the thread renders and behaves exactly as before
   // battles existed. Optional so pre-battle snapshots still decode.
   battleId: Schema.optional(Schema.NullOr(BattleId)),
+  // True for a battle's manager thread. It stays true after the thread is
+  // retired by a refresh, which is what keeps a replaced orchestrator out of
+  // the member lists it never belonged in. Optional so pre-orchestrator
+  // payloads still decode.
+  isOrchestrator: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -536,6 +541,11 @@ export const OrchestrationThreadShell = Schema.Struct({
   projectId: ProjectId,
   // Immutable at creation; absent = implicit single-thread battle.
   battleId: Schema.optional(Schema.NullOr(BattleId)),
+  // True for a battle's manager thread. It stays true after the thread is
+  // retired by a refresh, which is what keeps a replaced orchestrator out of
+  // the member lists it never belonged in. Optional so pre-orchestrator
+  // payloads still decode.
+  isOrchestrator: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -861,6 +871,33 @@ const BattleOrchestratorSetCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
+/**
+ * Swaps a battle's manager thread for a fresh one. Server-only, and a
+ * compare-and-swap: `previousThreadId` must still be the battle's orchestrator
+ * or the command is refused. That is what keeps a reactor retry from retiring
+ * a second manager, the same guarantee `set` gets from refusing a battle that
+ * already has one.
+ */
+const BattleOrchestratorReplaceCommand = Schema.Struct({
+  type: Schema.Literal("battle.orchestrator.replace"),
+  commandId: CommandId,
+  battleId: BattleId,
+  previousThreadId: ThreadId,
+  threadId: ThreadId,
+});
+
+/**
+ * Asks for a fresh orchestrator. The client may send this one: retiring a
+ * conversation is the user's call, while naming the replacement stays the
+ * reactor's job.
+ */
+const BattleOrchestratorRefreshCommand = Schema.Struct({
+  type: Schema.Literal("battle.orchestrator.refresh"),
+  commandId: CommandId,
+  battleId: BattleId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadCreateCommand = Schema.Struct({
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
@@ -876,6 +913,8 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  // Server-only: the orchestrator reactor is the sole caller that sets this.
+  isOrchestrator: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -1125,6 +1164,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   BattleDeclareDefeatCommand,
   BattleReopenCommand,
   BattleDeleteCommand,
+  BattleOrchestratorRefreshCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1162,6 +1202,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   BattleDeclareDefeatCommand,
   BattleReopenCommand,
   BattleDeleteCommand,
+  BattleOrchestratorRefreshCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1270,6 +1311,7 @@ const ThreadTurnQueueUpdateCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   BattleOrchestratorSetCommand,
+  BattleOrchestratorReplaceCommand,
   ThreadTurnQueueUpdateCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -1299,6 +1341,7 @@ export const OrchestrationEventType = Schema.Literals([
   "battle.condition-struck",
   "battle.phase-changed",
   "battle.orchestrator-set",
+  "battle.orchestrator-refresh-requested",
   "battle.deleted",
   "thread.created",
   "thread.deleted",
@@ -1430,10 +1473,22 @@ export const BattleOrchestratorSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+/**
+ * A user asked for a fresh orchestrator. The reactor answers this by retiring
+ * `previousOrchestratorThreadId` and minting a replacement; the event records
+ * the request so the work survives a restart between ask and answer.
+ */
+export const BattleOrchestratorRefreshRequestedPayload = Schema.Struct({
+  battleId: BattleId,
+  previousOrchestratorThreadId: ThreadId,
+  requestedAt: IsoDateTime,
+});
+
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   battleId: Schema.optional(Schema.NullOr(BattleId)),
+  isOrchestrator: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1705,6 +1760,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("battle.orchestrator-set"),
     payload: BattleOrchestratorSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.orchestrator-refresh-requested"),
+    payload: BattleOrchestratorRefreshRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

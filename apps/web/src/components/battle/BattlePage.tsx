@@ -32,7 +32,7 @@ import { WorkspacePageHeader } from "../WorkspacePageHeader";
 
 function SectionLabel(props: { readonly children: ReactNode }) {
   return (
-    <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+    <h2 className="text-[13px] font-medium tracking-wide text-muted-foreground uppercase">
       {props.children}
     </h2>
   );
@@ -53,15 +53,15 @@ const BattleThreadRow = memo(function BattleThreadRow(props: { thread: Environme
             params: { environmentId: thread.environmentId, threadId: thread.id },
           })
         }
-        className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-card px-2.5 text-left text-xs outline-none hover:border-border hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md border border-border/60 bg-card px-2.5 text-left text-[15px] outline-none hover:border-border hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring"
       >
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
           {thread.title}
         </span>
         {thread.archivedAt !== null ? (
-          <span className="shrink-0 text-[11px] text-muted-foreground/70">Archived</span>
+          <span className="shrink-0 text-[13px] text-muted-foreground/70">Archived</span>
         ) : pill !== null ? (
-          <span className={cn("flex shrink-0 items-center gap-1.5 text-[11px]", pill.colorClass)}>
+          <span className={cn("flex shrink-0 items-center gap-1.5 text-[13px]", pill.colorClass)}>
             <span className={cn("size-1.5 rounded-full", pill.dotClass)} />
             {pill.label}
           </span>
@@ -87,13 +87,13 @@ const BattleHero = memo(function BattleHero(props: {
   const progress = battleScopeProgress(battle);
   const memberItems = useMemo(() => layoutBattleMembers(threads), [threads]);
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-4 pt-10 pb-2 sm:pt-12">
+    <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-3 px-3 pt-5 pb-3 sm:px-5">
       <div className="flex w-full flex-col items-center gap-2 text-center">
-        <h2 className="max-w-full truncate text-xl font-semibold text-foreground">
+        <h2 className="max-w-full truncate text-2xl font-semibold text-foreground">
           {battle.title}
         </h2>
         {!detailsCollapsed && battle.goal !== null ? (
-          <p className="m-0 max-w-prose text-sm whitespace-pre-wrap text-foreground/85">
+          <p className="m-0 max-w-prose text-base whitespace-pre-wrap text-foreground/85">
             {battle.goal}
           </p>
         ) : null}
@@ -110,19 +110,19 @@ const BattleHero = memo(function BattleHero(props: {
             ) : null}
           </SectionLabel>
           {battle.victoryConditions.length === 0 ? (
-            <p className="m-0 text-sm text-muted-foreground/70">No victory conditions yet.</p>
+            <p className="m-0 text-base text-muted-foreground/70">No victory conditions yet.</p>
           ) : (
             <div className="flex w-full flex-col gap-0.5" role="list">
               {battle.victoryConditions.map((condition) => (
                 <div
                   key={condition.id}
                   role="listitem"
-                  className="flex items-baseline gap-2 text-xs leading-5"
+                  className="flex items-baseline gap-2 text-base leading-6"
                 >
                   <span
                     aria-label={CONDITION_STATE_LABEL[condition.state]}
                     className={cn(
-                      "w-3 shrink-0 text-center font-mono text-[10px]",
+                      "w-3.5 shrink-0 text-center font-mono text-[13px]",
                       CONDITION_GLYPH_CLASS[condition.state],
                     )}
                   >
@@ -140,7 +140,7 @@ const BattleHero = memo(function BattleHero(props: {
                   >
                     {condition.title}
                   </span>
-                  <span className="w-7 shrink-0 text-right text-[10px] text-sky-600 tabular-nums dark:text-sky-300/80">
+                  <span className="w-8 shrink-0 text-right text-[13px] text-sky-600 tabular-nums dark:text-sky-300/80">
                     {formatSizeScore(condition)}
                   </span>
                 </div>
@@ -152,7 +152,7 @@ const BattleHero = memo(function BattleHero(props: {
 
       <section className="flex w-full max-w-xl flex-col items-center gap-2">
         {memberItems.length === 0 ? (
-          <p className="m-0 text-sm text-muted-foreground/70">
+          <p className="m-0 text-base text-muted-foreground/70">
             No threads enlisted yet. Threads join a battle when they are created.
           </p>
         ) : (
@@ -161,7 +161,7 @@ const BattleHero = memo(function BattleHero(props: {
               item.kind === "worktree-label" ? (
                 <li
                   key={`worktree-${item.worktreePath}`}
-                  className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground first:mt-0"
+                  className="mt-1 flex items-center gap-1.5 text-[13px] text-muted-foreground first:mt-0"
                 >
                   <GitBranchIcon aria-hidden className="size-3 shrink-0" />
                   <span className="min-w-0 truncate">
@@ -237,9 +237,10 @@ function BattleEmptyState(props: { readonly children: ReactNode }) {
 
 /**
  * The battle's own page: the orchestrator thread's chat, with the battle
- * context as the transcript's header. Everything renders from the live shell
- * snapshot, so the page tracks battle and thread changes without any fetch of
- * its own.
+ * context fixed above it. The context is an overlay rather than a scrolling
+ * header, so battle state stays on screen through a long conversation.
+ * Everything renders from the live shell snapshot, so the page tracks battle
+ * and thread changes without any fetch of its own.
  */
 export function BattlePage(props: {
   readonly environmentId: EnvironmentId;
@@ -310,7 +311,7 @@ export function BattlePage(props: {
         environmentId={environmentId}
         threadId={orchestratorThreadId}
         routeKind="server"
-        header={hero}
+        overlay={hero}
       />
     </SidebarInset>
   );

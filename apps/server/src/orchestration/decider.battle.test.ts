@@ -57,6 +57,8 @@ function makeReadModel(
   input: {
     readonly battles?: ReadonlyArray<OrchestrationBattle>;
     readonly threadBattleId?: BattleId | null;
+    /** Defaults to true, because most callers bind the thread as a manager. */
+    readonly threadIsOrchestrator?: boolean;
   } = {},
 ): OrchestrationReadModel {
   return {
@@ -84,6 +86,7 @@ function makeReadModel(
               id: ThreadId.make("thread-1"),
               projectId: PROJECT_ID,
               battleId: input.threadBattleId,
+              isOrchestrator: input.threadIsOrchestrator ?? true,
               title: "Thread",
               modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
               runtimeMode: "full-access",
@@ -554,6 +557,133 @@ it.layer(NodeServices.layer)("battle decider", (it) => {
             threadId: ThreadId.make("thread-1"),
           },
           readModel: makeReadModel({ battles: [makeBattle()], threadBattleId: null }),
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("asks for a fresh orchestrator, naming the one it retires", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "battle.orchestrator.refresh",
+          commandId: CommandId.make("cmd-orchestrator-refresh"),
+          battleId: BATTLE_ID,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        readModel: makeReadModel({
+          battles: [makeBattle({ orchestratorThreadId: ThreadId.make("thread-old") })],
+          threadBattleId: BATTLE_ID,
+        }),
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("battle.orchestrator-refresh-requested");
+      if (event?.type === "battle.orchestrator-refresh-requested") {
+        expect(event.aggregateKind).toBe("battle");
+        expect(event.payload.previousOrchestratorThreadId).toBe(ThreadId.make("thread-old"));
+      }
+    }),
+  );
+
+  it.effect("refuses a refresh before the battle has an orchestrator", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decideOrchestrationCommand({
+          command: {
+            type: "battle.orchestrator.refresh",
+            commandId: CommandId.make("cmd-orchestrator-refresh-early"),
+            battleId: BATTLE_ID,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+          readModel: makeReadModel({ battles: [makeBattle()], threadBattleId: BATTLE_ID }),
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("swaps the orchestrator when the retired thread is still bound", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "battle.orchestrator.replace",
+          commandId: CommandId.make("cmd-orchestrator-replace"),
+          battleId: BATTLE_ID,
+          previousThreadId: ThreadId.make("thread-old"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel({
+          battles: [makeBattle({ orchestratorThreadId: ThreadId.make("thread-old") })],
+          threadBattleId: BATTLE_ID,
+        }),
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("battle.orchestrator-set");
+      if (event?.type === "battle.orchestrator-set") {
+        expect(event.payload.orchestratorThreadId).toBe(ThreadId.make("thread-1"));
+      }
+    }),
+  );
+
+  it.effect("refuses a replacement whose retired thread is already gone", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decideOrchestrationCommand({
+          command: {
+            type: "battle.orchestrator.replace",
+            commandId: CommandId.make("cmd-orchestrator-replace-stale"),
+            battleId: BATTLE_ID,
+            previousThreadId: ThreadId.make("thread-old"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel({
+            battles: [makeBattle({ orchestratorThreadId: ThreadId.make("thread-newer") })],
+            threadBattleId: BATTLE_ID,
+          }),
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("refuses an orchestrator binding on a thread that is not flagged", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decideOrchestrationCommand({
+          command: {
+            type: "battle.orchestrator.set",
+            commandId: CommandId.make("cmd-orchestrator-set-unflagged"),
+            battleId: BATTLE_ID,
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel({
+            battles: [makeBattle()],
+            threadBattleId: BATTLE_ID,
+            threadIsOrchestrator: false,
+          }),
+        }),
+      );
+      expect(result._tag).toBe("Failure");
+    }),
+  );
+
+  it.effect("refuses a replacement whose new thread is not flagged", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        decideOrchestrationCommand({
+          command: {
+            type: "battle.orchestrator.replace",
+            commandId: CommandId.make("cmd-orchestrator-replace-unflagged"),
+            battleId: BATTLE_ID,
+            previousThreadId: ThreadId.make("thread-old"),
+            threadId: ThreadId.make("thread-1"),
+          },
+          readModel: makeReadModel({
+            battles: [makeBattle({ orchestratorThreadId: ThreadId.make("thread-old") })],
+            threadBattleId: BATTLE_ID,
+            threadIsOrchestrator: false,
+          }),
         }),
       );
       expect(result._tag).toBe("Failure");

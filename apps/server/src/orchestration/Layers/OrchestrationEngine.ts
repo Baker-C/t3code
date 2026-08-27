@@ -80,9 +80,12 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "battle.declare-defeat":
     case "battle.reopen":
     case "battle.delete":
-    // Carries a threadId too, so it has to be named here or the default arm
-    // below would file it under the orchestrator thread instead of the battle.
+    // These carry a threadId too, so they have to be named here or the default
+    // arm below would file them under the orchestrator thread instead of the
+    // battle.
     case "battle.orchestrator.set":
+    case "battle.orchestrator.replace":
+    case "battle.orchestrator.refresh":
       return {
         aggregateKind: "battle",
         aggregateId: command.battleId,

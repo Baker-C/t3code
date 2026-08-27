@@ -40,6 +40,7 @@ export type DeclareBattleFightingInput = CommandInput<"battle.declare-fighting">
 export type DeclareBattleDefeatInput = CommandInput<"battle.declare-defeat">;
 export type ReopenBattleInput = CommandInput<"battle.reopen">;
 export type DeleteBattleInput = CommandInput<"battle.delete">;
+export type RefreshBattleOrchestratorInput = CommandInput<"battle.orchestrator.refresh">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -215,6 +216,18 @@ export const deleteBattle: (input: DeleteBattleInput) => CommandEffect = Effect.
     commandId: yield* commandId(input),
   });
 });
+
+/** Retires a battle's orchestrator thread and asks the server for a fresh one. */
+export const refreshBattleOrchestrator: (input: RefreshBattleOrchestratorInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.refreshBattleOrchestrator")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "battle.orchestrator.refresh",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
 
 export const createThread: (input: CreateThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.createThread",

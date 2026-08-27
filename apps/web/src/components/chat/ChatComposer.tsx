@@ -98,6 +98,7 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import { ComposerRefreshOrchestratorButton } from "./ComposerRefreshOrchestratorButton";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -3326,6 +3327,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               >
                 <div className="-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {activeThread?.isOrchestrator === true && activeThread.battleId != null ? (
+                    <ComposerRefreshOrchestratorButton
+                      environmentId={activeThread.environmentId}
+                      battleId={activeThread.battleId}
+                      hasConversation={activeThread.messages.length > 0}
+                      compact={isComposerFooterCompact}
+                    />
+                  ) : null}
                   {noProviderAvailable ? (
                     <Button
                       type="button"

@@ -165,6 +165,30 @@ const SNAPSHOT_WITH_ORCHESTRATOR: OrchestrationShellSnapshot = {
   ],
 };
 
+/**
+ * A refresh has landed: the battle now names a different manager, and THREAD_ID
+ * is the retired one — still flagged, no longer bound.
+ */
+const SNAPSHOT_AFTER_ORCHESTRATOR_REFRESH: OrchestrationShellSnapshot = {
+  ...SNAPSHOT_WITH_ORCHESTRATOR,
+  snapshotSequence: 3,
+  threads: [
+    { ...THREAD_SHELL, isOrchestrator: true, archivedAt: "2026-06-02T00:00:00.000Z" },
+    {
+      ...THREAD_SHELL,
+      id: OTHER_THREAD_ID,
+      projectId: OTHER_PROJECT_ID,
+      title: "Other thread",
+    },
+  ],
+  battles: [
+    {
+      ...SNAPSHOT_WITH_ORCHESTRATOR.battles[0]!,
+      orchestratorThreadId: ThreadId.make("thread-replacement"),
+    },
+  ],
+};
+
 function shellState(snapshot: OrchestrationShellSnapshot): EnvironmentShellState {
   return {
     snapshot: Option.some(snapshot),
@@ -423,5 +447,30 @@ describe("orchestrator threads", () => {
     expect(harness.registry.get(harness.threadShells.threadShellAtom(threadRef))?.id).toBe(
       THREAD_ID,
     );
+  });
+  it("keeps a retired orchestrator out of the shell lists after a refresh rebinds", () => {
+    const harness = makeHarness();
+    const projectRef = { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID };
+    const projectThreadsAtom = harness.threadShells.threadShellsForProjectRefsAtom([projectRef]);
+
+    harness.registry.set(
+      harness.shellStateAtom,
+      AsyncResult.success(shellState(SNAPSHOT_AFTER_ORCHESTRATOR_REFRESH)),
+    );
+
+    // The battle no longer names THREAD_ID, so only its own flag can keep it
+    // out. This is the list the inbox and the command palette read.
+    expect(harness.registry.get(harness.threadShells.threadShellsAtom).map((t) => t.id)).toEqual([
+      OTHER_THREAD_ID,
+    ]);
+    expect(harness.registry.get(projectThreadsAtom)).toEqual([]);
+    expect(
+      harness.registry.get(
+        harness.threadShells.threadShellAtom({
+          environmentId: ENVIRONMENT_ID,
+          threadId: THREAD_ID,
+        }),
+      )?.id,
+    ).toBe(THREAD_ID);
   });
 });
