@@ -117,6 +117,7 @@ describe("OrchestrationReactor", () => {
       "thread-deletion-reactor",
       "battle-retirement-reactor",
       "battle-orchestrator-reactor",
+      "battle-queue-readiness",
       "agent-awareness-relay",
     ]);
 
