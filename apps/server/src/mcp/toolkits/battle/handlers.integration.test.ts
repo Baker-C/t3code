@@ -112,6 +112,9 @@ const seedBattle = Effect.fn("seedBattle")(function* (name: string) {
       threadId,
       projectId,
       battleId: fixture.battleId,
+      // The decider refuses to bind an unflagged thread, so the fixture flags
+      // its manager exactly as the reactor does.
+      isOrchestrator: threadId === fixture.orchestratorThreadId,
       title,
       modelSelection: MODEL_SELECTION,
       runtimeMode: "full-access",
