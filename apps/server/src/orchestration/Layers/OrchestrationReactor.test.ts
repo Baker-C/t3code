@@ -6,6 +6,7 @@ import * as Scope from "effect/Scope";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { BattleOrchestratorReactor } from "../Services/BattleOrchestratorReactor.ts";
+import { BattleQueueReadinessReactor } from "../Services/BattleQueueReadinessReactor.ts";
 import { BattleRetirementReactor } from "../Services/BattleRetirementReactor.ts";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
@@ -30,6 +31,15 @@ describe("OrchestrationReactor", () => {
 
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
+        Layer.provideMerge(
+          Layer.succeed(BattleQueueReadinessReactor, {
+            start: () => {
+              started.push("battle-queue-readiness");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
         Layer.provideMerge(
           Layer.succeed(ProviderRuntimeIngestionService, {
             start: () => {

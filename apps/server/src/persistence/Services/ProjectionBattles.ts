@@ -10,8 +10,10 @@
 import {
   BattleId,
   BattlePhase,
+  BattleThreadGroup,
   IsoDateTime,
   ProjectId,
+  QueuePriority,
   ThreadId,
   VictoryCondition,
 } from "@t3tools/contracts";
@@ -31,6 +33,9 @@ export const ProjectionBattle = Schema.Struct({
   phase: BattlePhase,
   victoryConditions: Schema.Array(VictoryCondition),
   orchestratorThreadId: Schema.NullOr(ThreadId),
+  priority: QueuePriority,
+  // Sparse: only the groups holding more than one thread are stored.
+  threadGroups: Schema.Array(BattleThreadGroup),
   defeatedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

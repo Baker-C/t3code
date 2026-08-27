@@ -211,6 +211,7 @@ describe("ProviderSessionReaper", () => {
           getCounts: () => Effect.die("unused"),
           getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
           getProjectShellById: () => Effect.die("unused"),
+          getQueueEntryByBattleId: () => Effect.succeed(Option.none()),
           getBattleById: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.die("unused"),

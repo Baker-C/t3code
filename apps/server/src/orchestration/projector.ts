@@ -1,11 +1,16 @@
 import type {
   BattleId,
+  BattleQueueEntry,
   OrchestrationBattle,
   OrchestrationEvent,
   OrchestrationReadModel,
+  QueueAction,
+  QueueActionId,
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  DEFAULT_QUEUE_PRIORITY,
+  resolveQueueEntries,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -17,6 +22,8 @@ import * as Schema from "effect/Schema";
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   BattleConditionAddedPayload,
+  BattlePrioritySetPayload,
+  BattleThreadGroupsSetPayload,
   BattleConditionStruckPayload,
   BattleConditionUpdatedPayload,
   BattleCreatedPayload,
@@ -28,6 +35,15 @@ import {
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
+  ProjectPrioritySetPayload,
+  QueueActionClearedPayload,
+  QueueActionSettledPayload,
+  QueueActionStartedPayload,
+  QueueActionWakeRuleSetPayload,
+  QueueEntryAddedPayload,
+  QueueEntryRemovedPayload,
+  QueueEntrySkippedPayload,
+  QueueLapResetPayload,
   ThreadActivityAppendedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
@@ -99,6 +115,37 @@ function updateBattle(
   patch: BattlePatch,
 ): OrchestrationBattle[] {
   return battles.map((battle) => (battle.id === battleId ? { ...battle, ...patch } : battle));
+}
+
+type QueueEntryPatch = Partial<Omit<BattleQueueEntry, "battleId" | "projectId">>;
+
+function updateQueueEntry(
+  entries: ReadonlyArray<BattleQueueEntry>,
+  battleId: BattleId,
+  patch: QueueEntryPatch,
+): BattleQueueEntry[] {
+  return entries.map((entry) => (entry.battleId === battleId ? { ...entry, ...patch } : entry));
+}
+
+/** Patches one action of one entry, stamping the entry's updatedAt with it. */
+function updateQueueAction(
+  entries: ReadonlyArray<BattleQueueEntry>,
+  battleId: BattleId,
+  actionId: QueueActionId,
+  patch: Partial<Omit<QueueAction, "id">>,
+  updatedAt: string,
+): BattleQueueEntry[] {
+  return entries.map((entry) =>
+    entry.battleId === battleId
+      ? {
+          ...entry,
+          actions: entry.actions.map((action) =>
+            action.id === actionId ? { ...action, ...patch } : action,
+          ),
+          updatedAt,
+        }
+      : entry,
+  );
 }
 
 function updateBattleCondition(
@@ -233,6 +280,7 @@ export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
     projects: [],
     threads: [],
     battles: [],
+    queueEntries: [],
     updatedAt: nowIso,
   };
 }
@@ -260,6 +308,7 @@ export function projectEvent(
             defaultThreadEnvMode: null,
             faviconPath: payload.faviconPath ?? null,
             scripts: payload.scripts,
+            priority: DEFAULT_QUEUE_PRIORITY,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             deletedAt: null,
@@ -333,6 +382,8 @@ export function projectEvent(
             phase: "scoping",
             victoryConditions: [],
             orchestratorThreadId: null,
+            priority: DEFAULT_QUEUE_PRIORITY,
+            threadGroups: [],
             defeatedAt: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -461,6 +512,219 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
           }),
         })),
+      );
+
+    case "project.priority-set":
+      return decodeForEvent(ProjectPrioritySetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          projects: nextBase.projects.map((project) =>
+            project.id === payload.projectId
+              ? { ...project, priority: payload.priority, updatedAt: payload.updatedAt }
+              : project,
+          ),
+        })),
+      );
+
+    case "battle.priority-set":
+      return decodeForEvent(BattlePrioritySetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattle(nextBase.battles, payload.battleId, {
+            priority: payload.priority,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "battle.thread-groups-set":
+      return decodeForEvent(
+        BattleThreadGroupsSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          battles: updateBattle(nextBase.battles, payload.battleId, {
+            threadGroups: payload.groups,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "queue.entry-added":
+      return decodeForEvent(QueueEntryAddedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const entry: BattleQueueEntry = {
+            battleId: payload.battleId,
+            projectId: payload.projectId,
+            orderKey: payload.orderKey,
+            // A fresh row is fair game this lap: you have not passed it over.
+            skippedInLap: false,
+            // Dormant: present and prioritised, with no action yet.
+            actions: [],
+            addedAt: payload.addedAt,
+            updatedAt: payload.addedAt,
+          };
+          const existing = resolveQueueEntries(nextBase.queueEntries).some(
+            (candidate) => candidate.battleId === payload.battleId,
+          );
+          return {
+            ...nextBase,
+            queueEntries: existing
+              ? resolveQueueEntries(nextBase.queueEntries).map((candidate) =>
+                  candidate.battleId === payload.battleId ? entry : candidate,
+                )
+              : [...resolveQueueEntries(nextBase.queueEntries), entry],
+          };
+        }),
+      );
+
+    case "queue.entry-removed":
+      return decodeForEvent(QueueEntryRemovedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          // Removed outright rather than tombstoned. The queue is deliberately
+          // disposable; the battles themselves are the durable record.
+          queueEntries: resolveQueueEntries(nextBase.queueEntries).filter(
+            (entry) => entry.battleId !== payload.battleId,
+          ),
+        })),
+      );
+
+    case "queue.entry-skipped":
+      return decodeForEvent(QueueEntrySkippedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          queueEntries: updateQueueEntry(
+            resolveQueueEntries(nextBase.queueEntries),
+            payload.battleId,
+            {
+              skippedInLap: true,
+              updatedAt: payload.skippedAt,
+            },
+          ),
+        })),
+      );
+
+    case "queue.lap-reset":
+      return decodeForEvent(QueueLapResetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          queueEntries: resolveQueueEntries(nextBase.queueEntries).map((entry) =>
+            entry.skippedInLap
+              ? { ...entry, skippedInLap: false, updatedAt: payload.resetAt }
+              : entry,
+          ),
+        })),
+      );
+
+    case "queue.action-started":
+      return decodeForEvent(QueueActionStartedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const entry = resolveQueueEntries(nextBase.queueEntries).find(
+            (candidate) => candidate.battleId === payload.battleId,
+          );
+          if (!entry) return nextBase;
+          const existing = entry.actions.find((action) => action.id === payload.actionId);
+          // Re-starting an open action widens it: a second thread joining the
+          // same kick-off belongs to the action already covering its group,
+          // not to a new one that would double the battle's ready count.
+          const nextAction: QueueAction = existing
+            ? {
+                ...existing,
+                threadIds: [
+                  ...existing.threadIds,
+                  ...payload.threadIds.filter((threadId) => !existing.threadIds.includes(threadId)),
+                ],
+              }
+            : {
+                id: payload.actionId,
+                threadIds: payload.threadIds,
+                wakeRule: payload.wakeRule,
+                outcome: null,
+                startedAt: payload.startedAt,
+                readyAt: null,
+              };
+          return {
+            ...nextBase,
+            queueEntries: updateQueueEntry(
+              resolveQueueEntries(nextBase.queueEntries),
+              payload.battleId,
+              {
+                actions: existing
+                  ? entry.actions.map((action) =>
+                      action.id === payload.actionId ? nextAction : action,
+                    )
+                  : [...entry.actions, nextAction],
+                updatedAt: payload.startedAt,
+              },
+            ),
+          };
+        }),
+      );
+
+    case "queue.action-wake-rule-set":
+      return decodeForEvent(
+        QueueActionWakeRuleSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          queueEntries: updateQueueAction(
+            resolveQueueEntries(nextBase.queueEntries),
+            payload.battleId,
+            payload.actionId,
+            { wakeRule: payload.wakeRule },
+            payload.updatedAt,
+          ),
+        })),
+      );
+
+    case "queue.action-settled":
+      return decodeForEvent(QueueActionSettledPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const withOutcome = updateQueueAction(
+            resolveQueueEntries(nextBase.queueEntries),
+            payload.battleId,
+            payload.actionId,
+            { outcome: payload.outcome, readyAt: payload.readyAt },
+            payload.readyAt,
+          );
+          return {
+            ...nextBase,
+            // Skip invalidation: new work is new information, so a battle you
+            // passed over earns its place back in the lap the moment something
+            // in it wants you again.
+            queueEntries: updateQueueEntry(withOutcome, payload.battleId, {
+              skippedInLap: false,
+            }),
+          };
+        }),
+      );
+
+    case "queue.action-cleared":
+      return decodeForEvent(QueueActionClearedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const entry = resolveQueueEntries(nextBase.queueEntries).find(
+            (candidate) => candidate.battleId === payload.battleId,
+          );
+          if (!entry) return nextBase;
+          return {
+            ...nextBase,
+            queueEntries: updateQueueEntry(
+              resolveQueueEntries(nextBase.queueEntries),
+              payload.battleId,
+              {
+                actions: entry.actions.filter((action) => action.id !== payload.actionId),
+                updatedAt: payload.clearedAt,
+              },
+            ),
+          };
+        }),
       );
 
     case "battle.deleted":

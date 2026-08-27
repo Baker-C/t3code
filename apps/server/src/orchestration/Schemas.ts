@@ -10,6 +10,17 @@ import {
   BattlePhaseChangedPayload as ContractsBattlePhaseChangedPayloadSchema,
   BattleOrchestratorSetPayload as ContractsBattleOrchestratorSetPayloadSchema,
   BattleDeletedPayload as ContractsBattleDeletedPayloadSchema,
+  BattlePrioritySetPayload as ContractsBattlePrioritySetPayloadSchema,
+  BattleThreadGroupsSetPayload as ContractsBattleThreadGroupsSetPayloadSchema,
+  ProjectPrioritySetPayload as ContractsProjectPrioritySetPayloadSchema,
+  QueueEntryAddedPayload as ContractsQueueEntryAddedPayloadSchema,
+  QueueEntryRemovedPayload as ContractsQueueEntryRemovedPayloadSchema,
+  QueueEntrySkippedPayload as ContractsQueueEntrySkippedPayloadSchema,
+  QueueLapResetPayload as ContractsQueueLapResetPayloadSchema,
+  QueueActionStartedPayload as ContractsQueueActionStartedPayloadSchema,
+  QueueActionWakeRuleSetPayload as ContractsQueueActionWakeRuleSetPayloadSchema,
+  QueueActionSettledPayload as ContractsQueueActionSettledPayloadSchema,
+  QueueActionClearedPayload as ContractsQueueActionClearedPayloadSchema,
   ThreadCreatedPayload as ContractsThreadCreatedPayloadSchema,
   ThreadTurnQueueUpdatedPayload as ContractsThreadTurnQueueUpdatedPayloadSchema,
   ThreadArchivedPayload as ContractsThreadArchivedPayloadSchema,
@@ -51,6 +62,18 @@ export const BattleConditionStruckPayload = ContractsBattleConditionStruckPayloa
 export const BattlePhaseChangedPayload = ContractsBattlePhaseChangedPayloadSchema;
 export const BattleOrchestratorSetPayload = ContractsBattleOrchestratorSetPayloadSchema;
 export const BattleDeletedPayload = ContractsBattleDeletedPayloadSchema;
+export const BattlePrioritySetPayload = ContractsBattlePrioritySetPayloadSchema;
+export const BattleThreadGroupsSetPayload = ContractsBattleThreadGroupsSetPayloadSchema;
+
+export const ProjectPrioritySetPayload = ContractsProjectPrioritySetPayloadSchema;
+export const QueueEntryAddedPayload = ContractsQueueEntryAddedPayloadSchema;
+export const QueueEntryRemovedPayload = ContractsQueueEntryRemovedPayloadSchema;
+export const QueueEntrySkippedPayload = ContractsQueueEntrySkippedPayloadSchema;
+export const QueueLapResetPayload = ContractsQueueLapResetPayloadSchema;
+export const QueueActionStartedPayload = ContractsQueueActionStartedPayloadSchema;
+export const QueueActionWakeRuleSetPayload = ContractsQueueActionWakeRuleSetPayloadSchema;
+export const QueueActionSettledPayload = ContractsQueueActionSettledPayloadSchema;
+export const QueueActionClearedPayload = ContractsQueueActionClearedPayloadSchema;
 
 export const ThreadCreatedPayload = ContractsThreadCreatedPayloadSchema;
 export const ThreadTurnQueueUpdatedPayload = ContractsThreadTurnQueueUpdatedPayloadSchema;

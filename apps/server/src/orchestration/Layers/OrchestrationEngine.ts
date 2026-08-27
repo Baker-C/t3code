@@ -3,9 +3,10 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   ProjectId,
+  QueueId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { BATTLE_QUEUE_AGGREGATE_ID, OrchestrationCommand } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -60,8 +61,8 @@ interface CommandEnvelope {
 }
 
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread" | "battle";
-  readonly aggregateId: ProjectId | ThreadId | BattleId;
+  readonly aggregateKind: "project" | "thread" | "battle" | "queue";
+  readonly aggregateId: ProjectId | ThreadId | BattleId | QueueId;
 } {
   switch (command.type) {
     case "project.create":
@@ -86,9 +87,35 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "battle.orchestrator.set":
     case "battle.orchestrator.replace":
     case "battle.orchestrator.refresh":
+    case "battle.priority.set":
+    case "battle.thread-groups.set":
       return {
         aggregateKind: "battle",
         aggregateId: command.battleId,
+      };
+    case "project.priority.set":
+      return {
+        aggregateKind: "project",
+        aggregateId: command.projectId,
+      };
+    // The queue files entry work under its battle, so one battle's queue
+    // history reads as one stream.
+    case "battle.queue.add":
+    case "battle.queue.skip":
+    case "battle.queue.action.start":
+    case "battle.queue.action.wake-rule.set":
+    case "battle.queue.action.settle":
+    case "battle.queue.action.clear":
+      return {
+        aggregateKind: "queue",
+        aggregateId: command.battleId,
+      };
+    // A multi-row clear spans battles, so it files under the queue itself.
+    // The events it decides into still carry their own battle ids.
+    case "battle.queue.remove":
+      return {
+        aggregateKind: "queue",
+        aggregateId: BATTLE_QUEUE_AGGREGATE_ID,
       };
     default:
       return {

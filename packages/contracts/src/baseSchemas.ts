@@ -60,6 +60,13 @@ export const BattleId = makeEntityId("BattleId");
 export type BattleId = typeof BattleId.Type;
 export const VictoryConditionId = makeEntityId("VictoryConditionId");
 export type VictoryConditionId = typeof VictoryConditionId.Type;
+/** Identifies the queue itself, for the queue-wide lap-reset event. */
+export const QueueId = makeEntityId("QueueId");
+export type QueueId = typeof QueueId.Type;
+export const QueueActionId = makeEntityId("QueueActionId");
+export type QueueActionId = typeof QueueActionId.Type;
+export const BattleThreadGroupId = makeEntityId("BattleThreadGroupId");
+export type BattleThreadGroupId = typeof BattleThreadGroupId.Type;
 export const EnvironmentId = makeEntityId("EnvironmentId");
 export type EnvironmentId = typeof EnvironmentId.Type;
 export const CommandId = makeEntityId("CommandId");

@@ -1,6 +1,11 @@
 import {
   battleLinesDrawn,
+  BATTLE_QUEUE_AGGREGATE_ID,
   EventId,
+  queueEntryIsReady,
+  resolveQueueEntries,
+  type BattleId,
+  type BattleQueueEntry,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -13,6 +18,7 @@ import type * as PlatformError from "effect/PlatformError";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
+  findQueueEntryByBattleId,
   listThreadsByBattleId,
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
@@ -21,8 +27,12 @@ import {
   requireBattleCondition,
   requireBattleConditionAbsent,
   requireBattleNotDefeated,
+  requireBattleThreadGroupsValid,
   requireProject,
   requireProjectAbsent,
+  requireQueueAction,
+  requireQueueEntry,
+  requireQueueEntryAbsent,
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
@@ -164,6 +174,43 @@ function threadHasQueuedTurnStart(
     latestUserMessageAtMs > latestTurnAtMs &&
     Math.abs(queuedAgeMs) <= QUEUED_TURN_START_GRACE_MS
   );
+}
+
+/**
+ * The event that drops a battle from the queue, or null when it was not in it.
+ * Both auto-drops (defeat, deletion) and the manual clear go through this, so
+ * removal is one shape wherever it comes from.
+ *
+ * Auto-drop is safe precisely because there is no automatic notion of a battle
+ * being complete: defeat is always an explicit human declaration, so the queue
+ * can trust the signal.
+ */
+function queueEntryRemovalPayload(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly battleId: BattleId;
+  readonly reason: "manual" | "defeated" | "deleted";
+  readonly occurredAt: string;
+}): {
+  readonly battleId: BattleId;
+  readonly reason: "manual" | "defeated" | "deleted";
+  readonly removedAt: string;
+} | null {
+  if (findQueueEntryByBattleId(input.readModel, input.battleId) === undefined) {
+    return null;
+  }
+  return { battleId: input.battleId, reason: input.reason, removedAt: input.occurredAt };
+}
+
+/**
+ * Whether a lap has run out: every queued battle that could be offered has
+ * already been passed over. The skip that empties the lap resets it in the
+ * same breath, so the client never has to know a lap exists.
+ *
+ * "Eligible" is "has a ready action" — a not-started battle is nothing to
+ * cycle to, so it neither holds the lap open nor gets skipped out of it.
+ */
+function lapIsExhausted(entries: ReadonlyArray<BattleQueueEntry>): boolean {
+  return !entries.some((entry) => queueEntryIsReady(entry) && !entry.skippedInLap);
 }
 
 function withEventBase(
@@ -586,22 +633,47 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const occurredAt = yield* nowIso;
-      return {
+      const defeated = {
         ...(yield* withEventBase({
-          aggregateKind: "battle",
+          aggregateKind: "battle" as const,
           aggregateId: command.battleId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "battle.phase-changed",
+        type: "battle.phase-changed" as const,
         payload: {
           battleId: command.battleId,
-          phase: "defeated",
+          phase: "defeated" as const,
           retireWorktrees: command.retireWorktrees,
           defeatedAt: occurredAt,
           updatedAt: occurredAt,
         },
       };
+      // Auto-drop. A human always declares defeat, so the queue can trust the
+      // signal and clear the row without asking. Reopening does not re-add:
+      // requeueing is deliberate.
+      const defeatDrop = queueEntryRemovalPayload({
+        readModel,
+        battleId: command.battleId,
+        reason: "defeated",
+        occurredAt,
+      });
+      if (defeatDrop === null) {
+        return defeated;
+      }
+      return [
+        defeated,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "queue" as const,
+            aggregateId: command.battleId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "queue.entry-removed" as const,
+          payload: defeatDrop,
+        },
+      ];
     }
 
     case "battle.reopen": {
@@ -653,19 +725,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const occurredAt = yield* nowIso;
-      return {
+      const deleted = {
         ...(yield* withEventBase({
-          aggregateKind: "battle",
+          aggregateKind: "battle" as const,
           aggregateId: command.battleId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "battle.deleted",
+        type: "battle.deleted" as const,
         payload: {
           battleId: command.battleId,
           deletedAt: occurredAt,
         },
       };
+      // A deleted battle is gone, so its row goes with it. Dropping in the
+      // decider rather than a reactor keeps the two atomic: there is no window
+      // in which the queue points at a battle that no longer exists.
+      const deleteDrop = queueEntryRemovalPayload({
+        readModel,
+        battleId: command.battleId,
+        reason: "deleted",
+        occurredAt,
+      });
+      if (deleteDrop === null) {
+        return deleted;
+      }
+      return [
+        deleted,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "queue" as const,
+            aggregateId: command.battleId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "queue.entry-removed" as const,
+          payload: deleteDrop,
+        },
+      ];
     }
 
     case "battle.orchestrator.set": {
@@ -800,6 +897,325 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           battleId: command.battleId,
           previousOrchestratorThreadId: battle.orchestratorThreadId,
           requestedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "project.priority.set": {
+      yield* requireProject({ readModel, command, projectId: command.projectId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "project.priority-set",
+        payload: {
+          projectId: command.projectId,
+          priority: command.priority,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.priority.set": {
+      yield* requireBattle({ readModel, command, battleId: command.battleId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.priority-set",
+        payload: {
+          battleId: command.battleId,
+          priority: command.priority,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.thread-groups.set": {
+      yield* requireBattle({ readModel, command, battleId: command.battleId });
+      yield* requireBattleThreadGroupsValid({
+        readModel,
+        command,
+        battleId: command.battleId,
+        groups: command.groups,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.thread-groups-set",
+        payload: {
+          battleId: command.battleId,
+          // Singletons are dropped: a thread no group names is already in a
+          // group of its own, so storing them would only be a second way to
+          // say the same thing.
+          groups: command.groups.filter((group) => group.threadIds.length > 1),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.queue.add": {
+      const battle = yield* requireBattleNotDefeated({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      yield* requireQueueEntryAbsent({ readModel, command, battleId: command.battleId });
+      // Appended, so a tier reads back in the order you added to it.
+      const orderKey =
+        resolveQueueEntries(readModel.queueEntries).reduce(
+          (highest, entry) => Math.max(highest, entry.orderKey),
+          -1,
+        ) + 1;
+      const added = {
+        ...(yield* withEventBase({
+          aggregateKind: "queue" as const,
+          aggregateId: command.battleId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "queue.entry-added" as const,
+        payload: {
+          battleId: command.battleId,
+          projectId: battle.projectId,
+          orderKey,
+          addedAt: command.createdAt,
+        },
+      };
+      // Priority is set when you add, so the two land together rather than as
+      // two things the caller has to remember to do separately.
+      if (command.priority === undefined || command.priority === battle.priority) {
+        return added;
+      }
+      return [
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "battle" as const,
+            aggregateId: command.battleId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "battle.priority-set" as const,
+          payload: {
+            battleId: command.battleId,
+            priority: command.priority,
+            updatedAt: command.createdAt,
+          },
+        },
+        added,
+      ];
+    }
+
+    case "battle.queue.remove": {
+      const occurredAt = yield* nowIso;
+      const events: PlannedOrchestrationEvent[] = [];
+      // Unqueued ids are skipped rather than refused: a select-all clear races
+      // an auto-drop, and failing the whole batch over one already-gone row
+      // would be the wrong answer to a routine tidy.
+      for (const battleId of command.battleIds) {
+        const payload = queueEntryRemovalPayload({
+          readModel,
+          battleId,
+          reason: "manual",
+          occurredAt,
+        });
+        if (payload === null) continue;
+        events.push({
+          ...(yield* withEventBase({
+            aggregateKind: "queue",
+            aggregateId: battleId,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "queue.entry-removed",
+          payload,
+        });
+      }
+      return events;
+    }
+
+    case "battle.queue.skip": {
+      const entry = yield* requireQueueEntry({ readModel, command, battleId: command.battleId });
+      if (entry.skippedInLap) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' has already been passed over this lap.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      const skipped = {
+        ...(yield* withEventBase({
+          aggregateKind: "queue" as const,
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "queue.entry-skipped" as const,
+        payload: { battleId: command.battleId, skippedAt: occurredAt },
+      };
+      const afterSkip = resolveQueueEntries(readModel.queueEntries).map((candidate) =>
+        candidate.battleId === command.battleId ? { ...candidate, skippedInLap: true } : candidate,
+      );
+      if (!lapIsExhausted(afterSkip)) {
+        return skipped;
+      }
+      // The lap ran out on this skip. Resetting here rather than on the next
+      // cycle is what keeps "everything is fair game again" true the instant
+      // it becomes true, so the next button is never briefly dead.
+      return [
+        skipped,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "queue" as const,
+            aggregateId: BATTLE_QUEUE_AGGREGATE_ID,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "queue.lap-reset" as const,
+          payload: { resetAt: occurredAt },
+        },
+      ];
+    }
+
+    case "battle.queue.action.start": {
+      const entry = yield* requireQueueEntry({ readModel, command, battleId: command.battleId });
+      if (command.threadIds.length === 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Action '${command.actionId}' names no threads, so nothing was kicked off.`,
+        });
+      }
+      const existing = entry.actions.find((action) => action.id === command.actionId);
+      // Widening a settled action would resurrect a row you already dealt with,
+      // so the reactor opens a fresh action instead.
+      if (existing !== undefined && existing.outcome !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Action '${command.actionId}' on battle '${command.battleId}' has already settled.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "queue",
+          aggregateId: command.battleId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "queue.action-started",
+        payload: {
+          battleId: command.battleId,
+          actionId: command.actionId,
+          threadIds: command.threadIds,
+          wakeRule: command.wakeRule,
+          startedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "battle.queue.action.wake-rule.set": {
+      const entry = yield* requireQueueEntry({ readModel, command, battleId: command.battleId });
+      const action = yield* requireQueueAction({
+        command,
+        entry,
+        actionId: command.actionId,
+      });
+      // A settled action has already woken you; re-arming it would be a second
+      // way to say "ready" and would fight the outcome already recorded.
+      if (action.outcome !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Action '${command.actionId}' on battle '${command.battleId}' has already settled and cannot take a new wake rule.`,
+        });
+      }
+      if (
+        command.wakeRule.kind === "thread" &&
+        !action.threadIds.includes(command.wakeRule.threadId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.wakeRule.threadId}' is not in action '${command.actionId}', so waking on it would never fire.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "queue",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "queue.action-wake-rule-set",
+        payload: {
+          battleId: command.battleId,
+          actionId: command.actionId,
+          wakeRule: command.wakeRule,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.queue.action.settle": {
+      const entry = yield* requireQueueEntry({ readModel, command, battleId: command.battleId });
+      const action = yield* requireQueueAction({
+        command,
+        entry,
+        actionId: command.actionId,
+      });
+      // The reactor sees several settle signals around one turn end. Refusing
+      // the repeats here is what keeps one kick-off to one wake.
+      if (action.outcome !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Action '${command.actionId}' on battle '${command.battleId}' has already settled.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "queue",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "queue.action-settled",
+        payload: {
+          battleId: command.battleId,
+          actionId: command.actionId,
+          outcome: command.outcome,
+          readyAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.queue.action.clear": {
+      const entry = yield* requireQueueEntry({ readModel, command, battleId: command.battleId });
+      yield* requireQueueAction({ command, entry, actionId: command.actionId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "queue",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "queue.action-cleared",
+        payload: {
+          battleId: command.battleId,
+          actionId: command.actionId,
+          clearedAt: occurredAt,
         },
       };
     }

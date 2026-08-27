@@ -56,6 +56,7 @@ import Migration0040 from "./Migrations/040_ProjectionProjectFaviconPath.ts";
 import Migration0041 from "./Migrations/041_ProjectionBattles.ts";
 import Migration0042 from "./Migrations/042_ProjectionBattleOrchestrator.ts";
 import Migration0043 from "./Migrations/043_ProjectionThreadOrchestrator.ts";
+import Migration0044 from "./Migrations/044_ProjectionBattleQueue.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -111,6 +112,7 @@ export const migrationEntries = [
   [41, "ProjectionBattles", Migration0041],
   [42, "ProjectionBattleOrchestrator", Migration0042],
   [43, "ProjectionThreadOrchestrator", Migration0043],
+  [44, "ProjectionBattleQueue", Migration0044],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

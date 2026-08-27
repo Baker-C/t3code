@@ -8,6 +8,7 @@ import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
   BattleId,
+  BattleThreadGroupId,
   CheckpointRef,
   CommandId,
   EventId,
@@ -17,6 +18,8 @@ import {
   PositiveInt,
   ProjectId,
   ProviderItemId,
+  QueueActionId,
+  QueueId,
   ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
@@ -233,6 +236,162 @@ export const ProjectFaviconPath = TrimmedNonEmptyString.check(
 );
 export type ProjectFaviconPath = typeof ProjectFaviconPath.Type;
 
+/**
+ * Priority on a project or a battle. `0` is **unset**, not "lowest": an
+ * unprioritised project holding a top-priority battle deliberately lands
+ * mid-pack, and raising the project is precisely how you pull the whole
+ * project up.
+ */
+export const QueuePriority = Schema.Literals([0, 1, 2, 3]);
+export type QueuePriority = typeof QueuePriority.Type;
+export const DEFAULT_QUEUE_PRIORITY: QueuePriority = 0;
+
+/**
+ * The authored partition of a battle's threads into the units work is kicked
+ * off against. Stored sparsely: a thread named by no group is in a group of
+ * its own, so enlisting a thread needs no write here and "each thread starts
+ * in its own group" costs nothing. Drag-and-drop in the battle UI and the
+ * orchestrator's MCP tool both rewrite this one list.
+ */
+export const BattleThreadGroup = Schema.Struct({
+  id: BattleThreadGroupId,
+  threadIds: Schema.Array(ThreadId),
+});
+export type BattleThreadGroup = typeof BattleThreadGroup.Type;
+
+/**
+ * What makes an action available again.
+ *
+ * `all` is the default and is exactly the base rule: every thread in the
+ * action is idle and awaiting you. The other two relax it for work you do not
+ * need every thread back from. A thread that is finished and will not be used
+ * again is simply a thread sitting there waiting on you, so it never holds its
+ * action hostage; there is no separate "resolved" state to track.
+ */
+export const QueueWakeRule = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("all") }),
+  Schema.Struct({ kind: Schema.Literal("any") }),
+  Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
+]);
+export type QueueWakeRule = typeof QueueWakeRule.Type;
+
+export const DEFAULT_QUEUE_WAKE_RULE: QueueWakeRule = { kind: "all" };
+
+/**
+ * How a settled action wants you. All three count as ready; they differ only
+ * in what they are asking for. `errored` is marked on the row but stays in its
+ * tier, because a failure must not override your judgement about what matters.
+ */
+export const QueueActionOutcome = Schema.Literals(["completed", "needs-clarification", "errored"]);
+export type QueueActionOutcome = typeof QueueActionOutcome.Type;
+
+/**
+ * A unit of kicked-off work inside a battle: the threads one hand-off put in
+ * flight, plus the rule for when they want you back.
+ *
+ * An action is created by starting work, never by a thread existing. A battle
+ * with five idle threads you never touched has no actions.
+ */
+export const QueueAction = Schema.Struct({
+  id: QueueActionId,
+  threadIds: Schema.Array(ThreadId),
+  wakeRule: QueueWakeRule,
+  // Null while the action is still in flight, set the moment its wake rule is
+  // satisfied. Readiness is exactly `outcome !== null`.
+  outcome: Schema.NullOr(QueueActionOutcome),
+  startedAt: IsoDateTime,
+  readyAt: Schema.NullOr(IsoDateTime),
+});
+export type QueueAction = typeof QueueAction.Type;
+
+/**
+ * One battle's slot in the queue. A battle appears once no matter how many
+ * actions it has, which is what keeps the list short enough to cycle fast.
+ *
+ * The queue is environment-scoped by construction: battles belong to projects
+ * and projects belong to an environment, so an entry can never span one. A
+ * client merges the queues of every environment it holds and labels each row.
+ */
+export const BattleQueueEntry = Schema.Struct({
+  battleId: BattleId,
+  projectId: ProjectId,
+  // Position within a priority tier. Ordering is compounded priority first,
+  // then this. Append-on-add, so a tier reads in the order you added to it.
+  orderKey: NonNegativeInt,
+  // Passed over this lap. Cleared when the lap resets, and cleared early by a
+  // fresh readiness signal: new work is new information, so a skipped battle
+  // earns its place back in the lap.
+  skippedInLap: Schema.Boolean,
+  actions: Schema.Array(QueueAction),
+  addedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type BattleQueueEntry = typeof BattleQueueEntry.Type;
+
+/** A project's or battle's priority, treating an absent value as unset. */
+export const resolveQueuePriority = (priority: QueuePriority | undefined): QueuePriority =>
+  priority ?? DEFAULT_QUEUE_PRIORITY;
+
+/** A read model's or snapshot's queue, treating an absent value as empty. */
+export const resolveQueueEntries = (
+  queueEntries: ReadonlyArray<BattleQueueEntry> | undefined,
+): ReadonlyArray<BattleQueueEntry> => queueEntries ?? EMPTY_QUEUE_ENTRIES;
+
+const EMPTY_QUEUE_ENTRIES: ReadonlyArray<BattleQueueEntry> = [];
+
+/**
+ * Lap state is queue-wide rather than per-entry, so `queue.lap-reset` needs an
+ * aggregate id of its own. Entry-scoped events file under their battle.
+ */
+export const BATTLE_QUEUE_AGGREGATE_ID = QueueId.make("battle-queue");
+
+/** Whether an action's wake rule is satisfied by the threads now idle. */
+export const queueWakeRuleSatisfied = (input: {
+  readonly wakeRule: QueueWakeRule;
+  readonly threadIds: ReadonlyArray<ThreadId>;
+  readonly isIdle: (threadId: ThreadId) => boolean;
+}): boolean => {
+  const { isIdle, threadIds, wakeRule } = input;
+  if (threadIds.length === 0) return false;
+  switch (wakeRule.kind) {
+    case "all":
+      return threadIds.every((threadId) => isIdle(threadId));
+    case "any":
+      return threadIds.some((threadId) => isIdle(threadId));
+    case "thread":
+      // A rule naming a thread the action does not hold can never fire, which
+      // is what keeps a stale rule from waking on an unrelated settle.
+      return threadIds.includes(wakeRule.threadId) && isIdle(wakeRule.threadId);
+  }
+};
+
+/** A battle row reads as ready when any one of its actions is. */
+export const queueEntryIsReady = (entry: {
+  readonly actions: ReadonlyArray<{ readonly outcome: QueueActionOutcome | null }>;
+}): boolean => entry.actions.some((action) => action.outcome !== null);
+
+/** "Not started": in the queue, prioritised, with no action yet. */
+export const queueEntryIsNotStarted = (entry: {
+  readonly actions: ReadonlyArray<unknown>;
+}): boolean => entry.actions.length === 0;
+
+/** Marked on the row, but never promoted out of its tier. */
+export const queueEntryHasErrored = (entry: {
+  readonly actions: ReadonlyArray<{ readonly outcome: QueueActionOutcome | null }>;
+}): boolean => entry.actions.some((action) => action.outcome === "errored");
+
+/**
+ * The group a thread belongs to, given a battle's sparse partition. A thread
+ * no group names is its own group, so this never returns empty.
+ */
+export const battleThreadGroupFor = (input: {
+  readonly threadGroups: ReadonlyArray<BattleThreadGroup>;
+  readonly threadId: ThreadId;
+}): ReadonlyArray<ThreadId> =>
+  input.threadGroups.find((group) => group.threadIds.includes(input.threadId))?.threadIds ?? [
+    input.threadId,
+  ];
+
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
@@ -245,6 +404,9 @@ export const OrchestrationProject = Schema.Struct({
   // Optional on the wire so cached snapshots from older servers still decode.
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   scripts: Schema.Array(ProjectScript),
+  // Queue priority, 0-3, compounded with each battle's own to order the queue.
+  // Optional so pre-queue snapshots still decode; absent reads as unset.
+  priority: Schema.optional(QueuePriority),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -302,6 +464,13 @@ export const OrchestrationBattle = Schema.Struct({
   orchestratorThreadId: Schema.NullOr(ThreadId).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  // Queue priority, 0-3, compounded with the project's. It lives on the battle
+  // rather than the queue entry so removing a battle from the queue and adding
+  // it back does not lose the judgement you already made about it.
+  priority: Schema.optional(QueuePriority),
+  // Sparse: only the groups holding more than one thread are stored. See
+  // `BattleThreadGroup`.
+  threadGroups: Schema.optional(Schema.Array(BattleThreadGroup)),
   defeatedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -517,6 +686,7 @@ export const OrchestrationReadModel = Schema.Struct({
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
   battles: Schema.Array(OrchestrationBattle).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  queueEntries: Schema.optional(Schema.Array(BattleQueueEntry)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
@@ -531,6 +701,7 @@ export const OrchestrationProjectShell = Schema.Struct({
   // Optional on the wire so cached snapshots from older servers still decode.
   faviconPath: Schema.optional(Schema.NullOr(ProjectFaviconPath)),
   scripts: Schema.Array(ProjectScript),
+  priority: Schema.optional(QueuePriority),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -604,6 +775,10 @@ export const OrchestrationShellSnapshot = Schema.Struct({
   // Battles are small (conditions inline, no messages), so the shell carries
   // the full entity. Decoding default keeps pre-battle snapshots valid.
   battles: Schema.Array(OrchestrationBattle).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  // The environment's battle queue. Entries are tiny (a handful of actions, no
+  // messages), so the shell carries them whole like battles. Optional so
+  // pre-queue snapshots still decode.
+  queueEntries: Schema.optional(Schema.Array(BattleQueueEntry)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
@@ -636,6 +811,16 @@ export const OrchestrationShellStreamEvent = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("battle-removed"),
+    sequence: NonNegativeInt,
+    battleId: BattleId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("queue-entry-upserted"),
+    sequence: NonNegativeInt,
+    entry: BattleQueueEntry,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("queue-entry-removed"),
     sequence: NonNegativeInt,
     battleId: BattleId,
   }),
@@ -896,6 +1081,113 @@ const BattleOrchestratorRefreshCommand = Schema.Struct({
   commandId: CommandId,
   battleId: BattleId,
   createdAt: IsoDateTime,
+});
+
+/**
+ * Sets a project's queue priority. Separate from `project.meta.update` because
+ * it is a queue judgement rather than project metadata, and because the queue
+ * settings can switch the whole dimension off without touching anything else.
+ */
+const ProjectPrioritySetCommand = Schema.Struct({
+  type: Schema.Literal("project.priority.set"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  priority: QueuePriority,
+});
+
+const BattlePrioritySetCommand = Schema.Struct({
+  type: Schema.Literal("battle.priority.set"),
+  commandId: CommandId,
+  battleId: BattleId,
+  priority: QueuePriority,
+});
+
+/**
+ * Rewrites a battle's thread partition wholesale. Both authors — the battle
+ * UI's drag-and-drop and the orchestrator's MCP tool — send the same command,
+ * so there is one source of truth and no merge to get wrong.
+ */
+const BattleThreadGroupsSetCommand = Schema.Struct({
+  type: Schema.Literal("battle.thread-groups.set"),
+  commandId: CommandId,
+  battleId: BattleId,
+  groups: Schema.Array(BattleThreadGroup),
+});
+
+/**
+ * Puts a battle in the queue, dormant: present and prioritised, with no action
+ * yet. The slot is the intent; an action is the concrete work that follows.
+ * `priority` rides along because priority is set when you add.
+ */
+const BattleQueueAddCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.add"),
+  commandId: CommandId,
+  battleId: BattleId,
+  // Absent leaves the battle's existing priority alone.
+  priority: Schema.optional(QueuePriority),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Drops rows from the queue. Takes a list because removal is multi-select with
+ * a select-all: the daily tidy and the sit-down-fresh wipe are the same
+ * control, and neither is a blunt irreversible button.
+ */
+const BattleQueueRemoveCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.remove"),
+  commandId: CommandId,
+  battleIds: Schema.Array(BattleId),
+});
+
+/**
+ * Passes a battle over for the rest of this lap. The decider resets the lap in
+ * the same breath when nothing eligible is left, so the client never has to
+ * know what a lap is.
+ */
+const BattleQueueSkipCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.skip"),
+  commandId: CommandId,
+  battleId: BattleId,
+});
+
+const BattleQueueActionWakeRuleSetCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.action.wake-rule.set"),
+  commandId: CommandId,
+  battleId: BattleId,
+  actionId: QueueActionId,
+  wakeRule: QueueWakeRule,
+});
+
+/** Consumes a ready action once you have acted on it. */
+const BattleQueueActionClearCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.action.clear"),
+  commandId: CommandId,
+  battleId: BattleId,
+  actionId: QueueActionId,
+});
+
+/**
+ * Opens an action, or widens an open one to cover a thread that just joined
+ * the same kick-off. Server-only: an action is created by work starting, and
+ * the readiness reactor is the only thing that sees a turn start.
+ */
+const BattleQueueActionStartCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.action.start"),
+  commandId: CommandId,
+  battleId: BattleId,
+  actionId: QueueActionId,
+  threadIds: Schema.Array(ThreadId),
+  wakeRule: QueueWakeRule,
+  createdAt: IsoDateTime,
+});
+
+/** Server-only: the readiness reactor reporting that a wake rule fired. */
+const BattleQueueActionSettleCommand = Schema.Struct({
+  type: Schema.Literal("battle.queue.action.settle"),
+  commandId: CommandId,
+  battleId: BattleId,
+  actionId: QueueActionId,
+  outcome: QueueActionOutcome,
 });
 
 const ThreadCreateCommand = Schema.Struct({
@@ -1165,6 +1457,14 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   BattleReopenCommand,
   BattleDeleteCommand,
   BattleOrchestratorRefreshCommand,
+  ProjectPrioritySetCommand,
+  BattlePrioritySetCommand,
+  BattleThreadGroupsSetCommand,
+  BattleQueueAddCommand,
+  BattleQueueRemoveCommand,
+  BattleQueueSkipCommand,
+  BattleQueueActionWakeRuleSetCommand,
+  BattleQueueActionClearCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1203,6 +1503,14 @@ export const ClientOrchestrationCommand = Schema.Union([
   BattleReopenCommand,
   BattleDeleteCommand,
   BattleOrchestratorRefreshCommand,
+  ProjectPrioritySetCommand,
+  BattlePrioritySetCommand,
+  BattleThreadGroupsSetCommand,
+  BattleQueueAddCommand,
+  BattleQueueRemoveCommand,
+  BattleQueueSkipCommand,
+  BattleQueueActionWakeRuleSetCommand,
+  BattleQueueActionClearCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1312,6 +1620,8 @@ const ThreadTurnQueueUpdateCommand = Schema.Struct({
 const InternalOrchestrationCommand = Schema.Union([
   BattleOrchestratorSetCommand,
   BattleOrchestratorReplaceCommand,
+  BattleQueueActionStartCommand,
+  BattleQueueActionSettleCommand,
   ThreadTurnQueueUpdateCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
@@ -1342,7 +1652,18 @@ export const OrchestrationEventType = Schema.Literals([
   "battle.phase-changed",
   "battle.orchestrator-set",
   "battle.orchestrator-refresh-requested",
+  "battle.priority-set",
+  "battle.thread-groups-set",
   "battle.deleted",
+  "project.priority-set",
+  "queue.entry-added",
+  "queue.entry-removed",
+  "queue.entry-skipped",
+  "queue.lap-reset",
+  "queue.action-started",
+  "queue.action-wake-rule-set",
+  "queue.action-settled",
+  "queue.action-cleared",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -1373,7 +1694,11 @@ export const OrchestrationEventType = Schema.Literals([
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
-export const OrchestrationAggregateKind = Schema.Literals(["project", "thread", "battle"]);
+/**
+ * "queue" covers both the per-battle entry events (filed under their battle id)
+ * and the queue-wide lap reset (filed under `BATTLE_QUEUE_AGGREGATE_ID`).
+ */
+export const OrchestrationAggregateKind = Schema.Literals(["project", "thread", "battle", "queue"]);
 export type OrchestrationAggregateKind = typeof OrchestrationAggregateKind.Type;
 export const OrchestrationActorKind = Schema.Literals(["client", "server", "provider"]);
 
@@ -1482,6 +1807,81 @@ export const BattleOrchestratorRefreshRequestedPayload = Schema.Struct({
   battleId: BattleId,
   previousOrchestratorThreadId: ThreadId,
   requestedAt: IsoDateTime,
+});
+
+export const ProjectPrioritySetPayload = Schema.Struct({
+  projectId: ProjectId,
+  priority: QueuePriority,
+  updatedAt: IsoDateTime,
+});
+
+export const BattlePrioritySetPayload = Schema.Struct({
+  battleId: BattleId,
+  priority: QueuePriority,
+  updatedAt: IsoDateTime,
+});
+
+export const BattleThreadGroupsSetPayload = Schema.Struct({
+  battleId: BattleId,
+  groups: Schema.Array(BattleThreadGroup),
+  updatedAt: IsoDateTime,
+});
+
+export const QueueEntryAddedPayload = Schema.Struct({
+  battleId: BattleId,
+  projectId: ProjectId,
+  orderKey: NonNegativeInt,
+  addedAt: IsoDateTime,
+});
+
+/**
+ * Why a row left. `defeated` and `deleted` are the auto-drops; `manual` is the
+ * user clearing rows. A reopen never re-adds — requeueing is deliberate.
+ */
+export const QueueEntryRemovedReason = Schema.Literals(["manual", "defeated", "deleted"]);
+export type QueueEntryRemovedReason = typeof QueueEntryRemovedReason.Type;
+
+export const QueueEntryRemovedPayload = Schema.Struct({
+  battleId: BattleId,
+  reason: QueueEntryRemovedReason,
+  removedAt: IsoDateTime,
+});
+
+export const QueueEntrySkippedPayload = Schema.Struct({
+  battleId: BattleId,
+  skippedAt: IsoDateTime,
+});
+
+export const QueueLapResetPayload = Schema.Struct({
+  resetAt: IsoDateTime,
+});
+
+export const QueueActionStartedPayload = Schema.Struct({
+  battleId: BattleId,
+  actionId: QueueActionId,
+  threadIds: Schema.Array(ThreadId),
+  wakeRule: QueueWakeRule,
+  startedAt: IsoDateTime,
+});
+
+export const QueueActionWakeRuleSetPayload = Schema.Struct({
+  battleId: BattleId,
+  actionId: QueueActionId,
+  wakeRule: QueueWakeRule,
+  updatedAt: IsoDateTime,
+});
+
+export const QueueActionSettledPayload = Schema.Struct({
+  battleId: BattleId,
+  actionId: QueueActionId,
+  outcome: QueueActionOutcome,
+  readyAt: IsoDateTime,
+});
+
+export const QueueActionClearedPayload = Schema.Struct({
+  battleId: BattleId,
+  actionId: QueueActionId,
+  clearedAt: IsoDateTime,
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
@@ -1702,7 +2102,7 @@ const EventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  aggregateId: Schema.Union([ProjectId, ThreadId, BattleId]),
+  aggregateId: Schema.Union([ProjectId, ThreadId, BattleId, QueueId]),
   occurredAt: IsoDateTime,
   commandId: Schema.NullOr(CommandId),
   causationEventId: Schema.NullOr(EventId),
@@ -1765,6 +2165,61 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("battle.orchestrator-refresh-requested"),
     payload: BattleOrchestratorRefreshRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("project.priority-set"),
+    payload: ProjectPrioritySetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.priority-set"),
+    payload: BattlePrioritySetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("battle.thread-groups-set"),
+    payload: BattleThreadGroupsSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.entry-added"),
+    payload: QueueEntryAddedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.entry-removed"),
+    payload: QueueEntryRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.entry-skipped"),
+    payload: QueueEntrySkippedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.lap-reset"),
+    payload: QueueLapResetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.action-started"),
+    payload: QueueActionStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.action-wake-rule-set"),
+    payload: QueueActionWakeRuleSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.action-settled"),
+    payload: QueueActionSettledPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("queue.action-cleared"),
+    payload: QueueActionClearedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -28,6 +28,9 @@ import {
   ProjectId,
   ThreadId,
   VictoryCondition,
+  BattleThreadGroup,
+  QueueAction,
+  type BattleQueueEntry,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -49,6 +52,7 @@ import { ProjectionCheckpoint } from "../../persistence/Services/ProjectionCheck
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
 import { ProjectionBattle } from "../../persistence/Services/ProjectionBattles.ts";
+import { ProjectionQueueEntry } from "../../persistence/Services/ProjectionQueueEntries.ts";
 import { ProjectionProject } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionState } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -86,6 +90,12 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
 const ProjectionBattleDbRowSchema = ProjectionBattle.mapFields(
   Struct.assign({
     victoryConditions: Schema.fromJsonString(Schema.Array(VictoryCondition)),
+    threadGroups: Schema.fromJsonString(Schema.Array(BattleThreadGroup)),
+  }),
+);
+const ProjectionQueueEntryDbRowSchema = ProjectionQueueEntry.mapFields(
+  Struct.assign({
+    actions: Schema.fromJsonString(Schema.Array(QueueAction)),
   }),
 );
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
@@ -331,10 +341,26 @@ function mapBattleRow(
     phase: row.phase,
     victoryConditions: row.victoryConditions,
     orchestratorThreadId: row.orchestratorThreadId,
+    priority: row.priority,
+    threadGroups: row.threadGroups,
     defeatedAt: row.defeatedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
+  };
+}
+
+function mapQueueEntryRow(
+  row: Schema.Schema.Type<typeof ProjectionQueueEntryDbRowSchema>,
+): BattleQueueEntry {
+  return {
+    battleId: row.battleId,
+    projectId: row.projectId,
+    orderKey: row.orderKey,
+    skippedInLap: row.skippedInLap > 0,
+    actions: row.actions,
+    addedAt: row.addedAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -351,6 +377,7 @@ function mapProjectShellRow(
     defaultThreadEnvMode: row.defaultThreadEnvMode,
     faviconPath: row.faviconPath ?? null,
     scripts: row.scripts,
+    priority: row.priority,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -489,12 +516,50 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           phase,
           victory_conditions_json AS "victoryConditions",
           orchestrator_thread_id AS "orchestratorThreadId",
+          priority,
+          thread_groups_json AS "threadGroups",
           defeated_at AS "defeatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
         FROM projection_battles
         ORDER BY created_at ASC, battle_id ASC
+      `,
+  });
+
+  const listQueueEntryRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionQueueEntryDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          battle_id AS "battleId",
+          project_id AS "projectId",
+          order_key AS "orderKey",
+          skipped_in_lap AS "skippedInLap",
+          actions_json AS "actions",
+          added_at AS "addedAt",
+          updated_at AS "updatedAt"
+        FROM projection_queue_entries
+        ORDER BY order_key ASC, battle_id ASC
+      `,
+  });
+
+  const getQueueEntryRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ battleId: BattleId }),
+    Result: ProjectionQueueEntryDbRowSchema,
+    execute: ({ battleId }) =>
+      sql`
+        SELECT
+          battle_id AS "battleId",
+          project_id AS "projectId",
+          order_key AS "orderKey",
+          skipped_in_lap AS "skippedInLap",
+          actions_json AS "actions",
+          added_at AS "addedAt",
+          updated_at AS "updatedAt"
+        FROM projection_queue_entries
+        WHERE battle_id = ${battleId}
       `,
   });
 
@@ -512,6 +577,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           phase,
           victory_conditions_json AS "victoryConditions",
           orchestrator_thread_id AS "orchestratorThreadId",
+          priority,
+          thread_groups_json AS "threadGroups",
           defeated_at AS "defeatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1595,6 +1662,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listQueueEntryRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getSnapshot:listQueueEntries:query",
+                "ProjectionSnapshotQuery.getSnapshot:listQueueEntries:decodeRows",
+              ),
+            ),
+          ),
           listThreadMessageRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1659,6 +1734,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             projectRows,
             threadRows,
             battleRows,
+            queueEntryRows,
             messageRows,
             proposedPlanRows,
             activityRows,
@@ -1814,6 +1890,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 defaultModelSelection: row.defaultModelSelection,
                 defaultThreadEnvMode: row.defaultThreadEnvMode,
                 faviconPath: row.faviconPath ?? null,
+                priority: row.priority,
                 scripts: row.scripts,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -1856,6 +1933,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 projects,
                 threads,
                 battles: battleRows.map(mapBattleRow),
+                queueEntries: queueEntryRows.map(mapQueueEntryRow),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
 
@@ -1902,6 +1980,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listQueueEntryRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listQueueEntries:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listQueueEntries:decodeRows",
+              ),
+            ),
+          ),
           listThreadProposedPlanRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1943,6 +2029,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               projectRows,
               threadRows,
               battleRows,
+              queueEntryRows,
               proposedPlanRows,
               sessionRows,
               latestTurnRows,
@@ -1965,6 +2052,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 defaultModelSelection: row.defaultModelSelection,
                 defaultThreadEnvMode: row.defaultThreadEnvMode,
                 faviconPath: row.faviconPath ?? null,
+                priority: row.priority,
                 scripts: row.scripts,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2084,6 +2172,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               projects,
               threads,
               battles: battleRows.map(mapBattleRow),
+              queueEntries: queueEntryRows.map(mapQueueEntryRow),
               updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
             } satisfies OrchestrationReadModel;
           }),
@@ -2167,6 +2256,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listQueueEntryRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getShellSnapshot:listQueueEntries:query",
+                "ProjectionSnapshotQuery.getShellSnapshot:listQueueEntries:decodeRows",
+              ),
+            ),
+          ),
           listActiveThreadSessionRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2196,8 +2293,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       .pipe(
         Effect.flatMap((rows) =>
           Effect.gen(function* () {
-            const [projectRows, threadRows, battleRows, sessionRows, latestTurnRows, stateRows] =
-              rows;
+            const [
+              projectRows,
+              threadRows,
+              battleRows,
+              queueEntryRows,
+              sessionRows,
+              latestTurnRows,
+              stateRows,
+            ] = rows;
             let updatedAt: string | null = null;
             for (const row of projectRows) {
               updatedAt = maxIso(updatedAt, row.updatedAt);
@@ -2278,6 +2382,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               battles: Arr.filterMap(battleRows, (row) =>
                 row.deletedAt === null ? Result.succeed(mapBattleRow(row)) : Result.failVoid,
               ),
+              queueEntries: queueEntryRows.map(mapQueueEntryRow),
               updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
             };
 
@@ -2458,6 +2563,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Effect.map(Option.map(mapBattleRow)),
     );
 
+  const getQueueEntryByBattleId: ProjectionSnapshotQueryShape["getQueueEntryByBattleId"] = (
+    battleId,
+  ) =>
+    getQueueEntryRow({ battleId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getQueueEntryByBattleId:query",
+          "ProjectionSnapshotQuery.getQueueEntryByBattleId:decodeRow",
+        ),
+      ),
+      Effect.map(Option.map(mapQueueEntryRow)),
+    );
+
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
     listProjectionStateRows(undefined).pipe(
       Effect.mapError(
@@ -2535,6 +2653,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     defaultModelSelection: option.value.defaultModelSelection,
                     defaultThreadEnvMode: option.value.defaultThreadEnvMode,
                     faviconPath: option.value.faviconPath ?? null,
+                    priority: option.value.priority,
                     scripts: option.value.scripts,
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
@@ -3061,6 +3180,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
     getBattleById,
+    getQueueEntryByBattleId,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
     getFullThreadDiffContext,

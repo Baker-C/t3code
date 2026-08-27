@@ -18,6 +18,8 @@ import {
   BattleId,
   CheckpointRef,
   IsoDateTime,
+  QueueActionId,
+  QueueActionOutcome,
   NonNegativeInt,
   ThreadId,
   TurnId,
@@ -115,6 +117,29 @@ export const BattleOrchestratorReportSettledReceipt = Schema.Struct({
 export type BattleOrchestratorReportSettledReceipt =
   typeof BattleOrchestratorReportSettledReceipt.Type;
 
+/**
+ * One examined queue signal. Every outcome is named so a test can wait on the
+ * exact point the reactor decided, rather than proving a negative with a
+ * timeout.
+ *
+ * "opened" and "widened" are the kick-off side: a turn starting in a queued
+ * battle either opens an action for its thread group or joins the one already
+ * covering it. "settled" is a wake rule firing, "waiting" is a rule that has
+ * not fired yet, and "ignored" covers every signal that concerned no queued
+ * battle.
+ */
+export const BattleQueueReadinessSettledReceipt = Schema.Struct({
+  type: Schema.Literal("battle.queue.readiness-settled"),
+  battleId: Schema.NullOr(BattleId),
+  threadId: ThreadId,
+  actionId: Schema.NullOr(QueueActionId),
+  outcome: Schema.Literals(["opened", "widened", "settled", "waiting", "ignored"]),
+  // Set only on "settled": how the action wants you.
+  actionOutcome: Schema.NullOr(QueueActionOutcome),
+  createdAt: IsoDateTime,
+});
+export type BattleQueueReadinessSettledReceipt = typeof BattleQueueReadinessSettledReceipt.Type;
+
 export const OrchestrationRuntimeReceipt = Schema.Union([
   CheckpointBaselineCapturedReceipt,
   CheckpointDiffFinalizedReceipt,
@@ -123,6 +148,7 @@ export const OrchestrationRuntimeReceipt = Schema.Union([
   BattleOrchestratorReadyReceipt,
   BattleOrchestratorBackfillSettledReceipt,
   BattleOrchestratorReportSettledReceipt,
+  BattleQueueReadinessSettledReceipt,
 ]);
 export type OrchestrationRuntimeReceipt = typeof OrchestrationRuntimeReceipt.Type;
 

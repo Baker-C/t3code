@@ -169,6 +169,7 @@ const projectionLayer = (
 ) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getThreadShellById: () => Effect.succeed(thread === null ? Option.none() : Option.some(thread)),
+    getQueueEntryByBattleId: () => Effect.succeed(Option.none()),
     getBattleById: () => Effect.succeed(Option.some(options.battle ?? battle)),
     getShellSnapshot: () => Effect.succeed(shellSnapshotOf(options.threads ?? defaultThreads)),
     getCommandReadModel: () => Effect.die("unexpected getCommandReadModel"),

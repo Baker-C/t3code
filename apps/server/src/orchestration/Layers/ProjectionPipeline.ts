@@ -1,5 +1,6 @@
 import {
   ApprovalRequestId,
+  DEFAULT_QUEUE_PRIORITY,
   type ChatAttachment,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
@@ -16,6 +17,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionBattleRepository } from "../../persistence/Services/ProjectionBattles.ts";
+import { ProjectionQueueEntryRepository } from "../../persistence/Services/ProjectionQueueEntries.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
@@ -36,6 +38,7 @@ import {
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionBattleRepositoryLive } from "../../persistence/Layers/ProjectionBattles.ts";
+import { ProjectionQueueEntryRepositoryLive } from "../../persistence/Layers/ProjectionQueueEntries.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -60,6 +63,7 @@ import {
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
   battles: "projection.battles",
+  queueEntries: "projection.queue-entries",
   threads: "projection.threads",
   threadMessages: "projection.thread-messages",
   threadProposedPlans: "projection.thread-proposed-plans",
@@ -477,6 +481,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionStateRepository = yield* ProjectionStateRepository;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
     const projectionBattleRepository = yield* ProjectionBattleRepository;
+    const projectionQueueEntryRepository = yield* ProjectionQueueEntryRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
@@ -502,6 +507,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             defaultThreadEnvMode: null,
             faviconPath: event.payload.faviconPath ?? null,
             scripts: event.payload.scripts,
+            priority: DEFAULT_QUEUE_PRIORITY,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
             deletedAt: null,
@@ -531,6 +537,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { faviconPath: event.payload.faviconPath }
               : {}),
             ...(event.payload.scripts !== undefined ? { scripts: event.payload.scripts } : {}),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "project.priority-set": {
+          const existingRow = yield* projectionProjectRepository.getById({
+            projectId: event.payload.projectId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionProjectRepository.upsert({
+            ...existingRow.value,
+            priority: event.payload.priority,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -570,6 +591,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             phase: "scoping",
             victoryConditions: [],
             orchestratorThreadId: null,
+            priority: DEFAULT_QUEUE_PRIORITY,
+            threadGroups: [],
             defeatedAt: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -603,6 +626,36 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionBattleRepository.upsert({
             ...existingRow.value,
             orchestratorThreadId: event.payload.orchestratorThreadId,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.priority-set": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            priority: event.payload.priority,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "battle.thread-groups-set": {
+          const existingRow = yield* projectionBattleRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionBattleRepository.upsert({
+            ...existingRow.value,
+            threadGroups: event.payload.groups,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -772,6 +825,170 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         pendingUserInputCount,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
       });
+    });
+
+    /**
+     * The queue's own projector. It is separate from the battles projector
+     * because the two own different tables and a queue write must not be
+     * retried just because a battle write failed.
+     */
+    const applyQueueEntriesProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyQueueEntriesProjection",
+    )(function* (event, _attachmentSideEffects) {
+      switch (event.type) {
+        case "queue.entry-added":
+          yield* projectionQueueEntryRepository.upsert({
+            battleId: event.payload.battleId,
+            projectId: event.payload.projectId,
+            orderKey: event.payload.orderKey,
+            skippedInLap: 0,
+            actions: [],
+            addedAt: event.payload.addedAt,
+            updatedAt: event.payload.addedAt,
+          });
+          return;
+
+        case "queue.entry-removed":
+          // Deleted outright rather than tombstoned: the queue is deliberately
+          // disposable, and the battle is the durable record.
+          yield* projectionQueueEntryRepository.deleteById({
+            battleId: event.payload.battleId,
+          });
+          return;
+
+        case "queue.entry-skipped": {
+          const existingRow = yield* projectionQueueEntryRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionQueueEntryRepository.upsert({
+            ...existingRow.value,
+            skippedInLap: 1,
+            updatedAt: event.payload.skippedAt,
+          });
+          return;
+        }
+
+        case "queue.lap-reset":
+          yield* projectionQueueEntryRepository.clearSkips({
+            updatedAt: event.payload.resetAt,
+          });
+          return;
+
+        case "queue.action-started": {
+          const existingRow = yield* projectionQueueEntryRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const existingAction = existingRow.value.actions.find(
+            (action) => action.id === event.payload.actionId,
+          );
+          // Re-starting an open action widens it: a second thread joining the
+          // same kick-off belongs to the action already covering its group,
+          // not to a new one that would double the battle's ready count.
+          const nextActions = existingAction
+            ? existingRow.value.actions.map((action) =>
+                action.id === event.payload.actionId
+                  ? {
+                      ...action,
+                      threadIds: [
+                        ...action.threadIds,
+                        ...event.payload.threadIds.filter(
+                          (threadId) => !action.threadIds.includes(threadId),
+                        ),
+                      ],
+                    }
+                  : action,
+              )
+            : [
+                ...existingRow.value.actions,
+                {
+                  id: event.payload.actionId,
+                  threadIds: event.payload.threadIds,
+                  wakeRule: event.payload.wakeRule,
+                  outcome: null,
+                  startedAt: event.payload.startedAt,
+                  readyAt: null,
+                },
+              ];
+          yield* projectionQueueEntryRepository.upsert({
+            ...existingRow.value,
+            actions: nextActions,
+            updatedAt: event.payload.startedAt,
+          });
+          return;
+        }
+
+        case "queue.action-wake-rule-set": {
+          const existingRow = yield* projectionQueueEntryRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionQueueEntryRepository.upsert({
+            ...existingRow.value,
+            actions: existingRow.value.actions.map((action) =>
+              action.id === event.payload.actionId
+                ? { ...action, wakeRule: event.payload.wakeRule }
+                : action,
+            ),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "queue.action-settled": {
+          const existingRow = yield* projectionQueueEntryRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionQueueEntryRepository.upsert({
+            ...existingRow.value,
+            actions: existingRow.value.actions.map((action) =>
+              action.id === event.payload.actionId
+                ? {
+                    ...action,
+                    outcome: event.payload.outcome,
+                    readyAt: event.payload.readyAt,
+                  }
+                : action,
+            ),
+            // Skip invalidation: new work is new information, so a battle you
+            // passed over earns its place back in the lap the moment something
+            // in it wants you again.
+            skippedInLap: 0,
+            updatedAt: event.payload.readyAt,
+          });
+          return;
+        }
+
+        case "queue.action-cleared": {
+          const existingRow = yield* projectionQueueEntryRepository.getById({
+            battleId: event.payload.battleId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionQueueEntryRepository.upsert({
+            ...existingRow.value,
+            actions: existingRow.value.actions.filter(
+              (action) => action.id !== event.payload.actionId,
+            ),
+            updatedAt: event.payload.clearedAt,
+          });
+          return;
+        }
+
+        default:
+          return;
+      }
     });
 
     const applyThreadsProjection: ProjectorDefinition["apply"] = Effect.fn(
@@ -1811,6 +2028,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         apply: applyBattlesProjection,
       },
       {
+        name: ORCHESTRATION_PROJECTOR_NAMES.queueEntries,
+        apply: applyQueueEntriesProjection,
+      },
+      {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
         apply: applyThreadMessagesProjection,
       },
@@ -1938,6 +2159,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
 ).pipe(
   Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ProjectionBattleRepositoryLive),
+  Layer.provideMerge(ProjectionQueueEntryRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),

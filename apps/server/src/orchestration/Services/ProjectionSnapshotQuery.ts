@@ -9,6 +9,7 @@
 import type {
   BattleId,
   CheckpointRef,
+  BattleQueueEntry,
   OrchestrationBattle,
   OrchestrationCheckpointSummary,
   OrchestrationProject,
@@ -160,6 +161,13 @@ export interface ProjectionSnapshotQueryShape {
   readonly getBattleById: (
     battleId: BattleId,
   ) => Effect.Effect<Option.Option<OrchestrationBattle>, ProjectionRepositoryError>;
+
+  /**
+   * Read one battle's queue entry, or none when the battle is not queued.
+   */
+  readonly getQueueEntryByBattleId: (
+    battleId: BattleId,
+  ) => Effect.Effect<Option.Option<BattleQueueEntry>, ProjectionRepositoryError>;
 
   /**
    * Read the earliest active thread for a project.
