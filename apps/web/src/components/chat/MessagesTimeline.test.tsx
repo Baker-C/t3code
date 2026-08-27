@@ -1015,43 +1015,47 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Tool call failed"');
   });
 
-  it("renders the header above the transcript", () => {
+  it("reserves space above the transcript for a fixed overlay", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry("Hello")]}
-        header={<div data-testid="timeline-header">Battle context</div>}
+        contentInsetStartAdjustment={120}
       />,
     );
 
-    expect(markup).toContain("Battle context");
-    expect(markup.indexOf("Battle context")).toBeLessThan(markup.indexOf("Hello"));
+    expect(markup).toContain("height:120px");
+    expect(markup.indexOf("height:120px")).toBeLessThan(markup.indexOf("Hello"));
   });
 
-  it("keeps the header on screen while the thread has no messages", () => {
+  it("reserves no space when there is no overlay", () => {
     const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[]}
-        header={<div data-testid="timeline-header">Battle context</div>}
-      />,
+      <MessagesTimeline {...buildProps()} timelineEntries={[buildUserTimelineEntry("Hello")]} />,
     );
 
-    expect(markup).toContain("Battle context");
+    expect(markup).not.toContain("height:0px");
+  });
+
+  it("clears the overlay with the placeholder while the thread has no messages", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[]} contentInsetStartAdjustment={120} />,
+    );
+
+    expect(markup).toContain("padding-top:120px");
     expect(markup).toContain("Send a message to start the conversation.");
   });
 
-  it("hides the empty placeholder under a header when asked, keeping the header", () => {
+  it("keeps the overlay inset when the empty placeholder is hidden", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[]}
         hideEmptyPlaceholder
-        header={<div data-testid="timeline-header">Battle context</div>}
+        contentInsetStartAdjustment={120}
       />,
     );
 
-    expect(markup).toContain("Battle context");
+    expect(markup).toContain("padding-top:120px");
     expect(markup).not.toContain("Send a message to start the conversation.");
   });
 });

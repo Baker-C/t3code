@@ -696,6 +696,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' is not a member of battle '${command.battleId}' and cannot be its orchestrator.`,
         });
       }
+      // The flag outlives the binding, and the clients filter on it, so a
+      // thread that is not flagged would be manageable and still list as an
+      // ordinary member. Refusing here is what keeps the two in step.
+      if (thread.isOrchestrator !== true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is not flagged as an orchestrator and cannot manage battle '${command.battleId}'.`,
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -709,6 +718,88 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           battleId: command.battleId,
           orchestratorThreadId: command.threadId,
           updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.orchestrator.replace": {
+      const battle = yield* requireBattle({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      // Compare-and-swap. A reactor retry carries the same previousThreadId,
+      // so once the swap has landed the retry fails here instead of retiring
+      // the replacement it just minted.
+      if (battle.orchestratorThreadId !== command.previousThreadId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' is no longer orchestrated by thread '${command.previousThreadId}'.`,
+        });
+      }
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.battleId !== command.battleId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is not a member of battle '${command.battleId}' and cannot be its orchestrator.`,
+        });
+      }
+      // The flag outlives the binding, and the clients filter on it, so a
+      // thread that is not flagged would be manageable and still list as an
+      // ordinary member. Refusing here is what keeps the two in step.
+      if (thread.isOrchestrator !== true) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is not flagged as an orchestrator and cannot manage battle '${command.battleId}'.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.orchestrator-set",
+        payload: {
+          battleId: command.battleId,
+          orchestratorThreadId: command.threadId,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "battle.orchestrator.refresh": {
+      const battle = yield* requireBattleNotDefeated({
+        readModel,
+        command,
+        battleId: command.battleId,
+      });
+      // Nothing to retire yet: the reactor has not finished its first mint, and
+      // asking for a second one would race it.
+      if (battle.orchestratorThreadId === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Battle '${command.battleId}' has no orchestrator to refresh yet.`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "battle",
+          aggregateId: command.battleId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "battle.orchestrator-refresh-requested",
+        payload: {
+          battleId: command.battleId,
+          previousOrchestratorThreadId: battle.orchestratorThreadId,
+          requestedAt: command.createdAt,
         },
       };
     }
@@ -745,6 +836,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           ...(command.battleId !== undefined ? { battleId: command.battleId } : {}),
+          ...(command.isOrchestrator === undefined
+            ? {}
+            : { isOrchestrator: command.isOrchestrator }),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,

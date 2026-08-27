@@ -25,7 +25,8 @@ the bottom. The battle page becomes a chat page with the battle context above it
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Reply model         | Async send, then automatic report-back. `battle_thread_send` returns immediately. When the turn it started finishes, a reactor feeds the reply to the orchestrator. |
 | Orchestrator scope  | Manager only. No branch, no worktree, no checkpoints. It runs on the project root.                                                               |
-| Page layout         | Title, phase and goal stay pinned. Conditions and the thread list collapse to a summary line as the transcript scrolls.                          |
+| Page layout         | A fixed overlay at the top of the page, not a scrolling header. Centered, one step larger type, hiding away to title plus thread list.           |
+| Refresh             | One button archives the current orchestrator and starts a fresh one. The flag `isOrchestrator` keeps retired ones hidden.                        |
 | Creation            | Eager. A reactor creates the orchestrator when the battle is created, and backfills battles that have none.                                      |
 
 ## Facts from the codebase audit (2026-08-23)
@@ -50,20 +51,32 @@ the bottom. The battle page becomes a chat page with the battle context above it
   thread that is in a battle. The battle toolkit resolves the battle from the caller's own thread,
   which is what makes an id in a prompt unable to redirect it (`battle/handlers.ts`,
   `requireBattleScope`).
-- The client shell already streams every battle (`OrchestrationShellSnapshot.battles`), so the
-  clients can identify orchestrator threads without a new thread field.
+- The client shell already streams every battle (`OrchestrationShellSnapshot.battles`). That alone
+  would identify the *current* orchestrator without a new thread field, but not a retired one, which
+  is why section 1 adds `isOrchestrator` to the thread.
 - `ChatView` (`apps/web/src/components/ChatView.tsx`, 6832 lines) takes `routeKind: "server" |
-"draft"` and has no header slot.
+"draft"` and has no slot for caller-supplied content. `MessagesTimeline` renders through LegendList,
+which owns its own scrolling, so there is no shared scroll container a header could sit in.
 
 ## Changes
 
 ### 1. Contracts (`packages/contracts/src/orchestration.ts`)
 
-- `OrchestrationBattle` gets `orchestratorThreadId: Schema.optional(Schema.NullOr(ThreadId))`.
-  Optional, so snapshots written before this change still decode.
+- `OrchestrationBattle` gets `orchestratorThreadId: Schema.optional(Schema.NullOr(ThreadId))` —
+  which thread is the battle's orchestrator **right now**. Optional, so snapshots written before
+  this change still decode.
+- `OrchestrationThread` and `OrchestrationThreadShell` both get
+  `isOrchestrator: Schema.optional(Schema.Boolean)`, set by `ThreadCreateCommand`.
+
+  This flag is what the clients filter on, and it exists **because the orchestrator is
+  replaceable**. A retired orchestrator is no longer the battle's `orchestratorThreadId`, so a
+  filter keyed on that id alone would let every past orchestrator reappear in the sidebar as an
+  ordinary member thread. The flag stays true for the thread's whole life, so a thread that was
+  ever an orchestrator never surfaces as a member.
 - New command `battle.orchestrator.set { commandId, battleId, threadId }` and new event
-  `battle.orchestrator-set`. The decider refuses the command when the battle already has an
-  orchestrator, so one battle can never hold two.
+  `battle.orchestrator-set`. The decider accepts it when the battle has no orchestrator, and when
+  it replaces one — replacement is the refresh path in section 7. It refuses a `threadId` that is
+  not in the battle, or that is not flagged `isOrchestrator`.
 - Add `battle.orchestrator-set` to `OrchestrationEventType` and to the battle command unions.
 
 ### 2. Orchestrator creation (`apps/server/src/orchestration/Layers/BattleOrchestratorReactor.ts`)
@@ -107,36 +120,92 @@ Loop guards, all four required:
 ### 5. Battle page (`apps/web/src/components/battle/BattlePage.tsx`)
 
 Follow the iterated mock at `C:\Users\cdbak\MarsPortfolio\.lavish\battle-page-plan.html`
-(updated 2026-08-23 12:16). It supersedes the earlier layout in this plan.
+(updated 2026-08-23 12:16) for structure and for the hide-away behavior. The mock shows the context
+as the top of a scrolling page; the two deltas below supersede it.
 
-- `ChatViewProps` gains an optional `header?: ReactNode` rendered above the transcript, inside the
-  existing scroll container. This is the smallest change that keeps one composer implementation.
-- The battle context is a **centered hero** above the transcript, not a left-aligned page header:
-  the title, the goal text, the victory conditions and the thread list all center on the column.
-- The context **hides away** behind one centered chevron button below the block:
-  - Expanded: title, goal, victory conditions, thread list.
-  - Collapsed: title and thread list only. The goal text and the whole victory-conditions section
-    are hidden.
-  - The button swaps a chevron-up for a chevron-down and carries the label "Hide goal and victory
-    conditions" / "Show goal and victory conditions".
+**The context does not scroll. It is a fixed overlay.**
+
+- `MessagesTimeline` renders through LegendList, which owns its own scrolling and virtualization.
+  There is no shared scroll container to put a header in, so an overlay is both what was asked for
+  and the only clean fit.
+- Copy the pattern already in `ChatView.tsx:6405` — the provider status banner, which is
+  `absolute inset-x-0 top-0 z-20` over the timeline with the comment "overlays the timeline without
+  changing its content height." The battle context takes the same position. Unlike that banner it
+  is interactive, so the container is `pointer-events-none` and the toggle and thread rows are
+  `pointer-events-auto`.
+- The overlay needs an opaque background, not a backdrop blur. A blurred layer over a virtualized
+  list repaints on every scroll frame and is exactly the kind of GPU cost `AGENTS.md` calls out.
+- The transcript needs a matching top inset or its first messages sit under the overlay.
+  `MessagesTimeline` already carries `contentInsetEndAdjustment` for the bottom
+  (`MessagesTimeline.tsx:229`, applied as `paddingBottom` at line 573). Mirror it with a start
+  adjustment rather than inventing a second mechanism.
+- The inset must follow the overlay's real height, because the hide-away changes it. Measure with a
+  `ResizeObserver` and pass the height through; do not hard-code a height per state.
+- `ChatViewProps` therefore gains `overlay?: ReactNode` plus the start inset, **not** the
+  `header?: ReactNode` inside a scroll container that an earlier draft of this plan described.
+
+**The overlay text is larger.** From the mock's sizes, one step up on every part:
+
+| Part | Mock | New |
+| --- | --- | --- |
+| Battle title | 20px | 24px |
+| Goal text | 14px | 16px |
+| Section labels | 12px | 13px |
+| Victory condition rows | 14px | 16px |
+| Size scores | 12px | 13px |
+| Thread rows | 14px | 15px |
+
+Keep the rest as the mock has it:
+
+- The context is a **centered hero**: title, goal, victory conditions and thread list all center on
+  the column.
+- It **hides away** behind one centered chevron button below the block. Expanded shows title, goal,
+  victory conditions and thread list; collapsed shows title and thread list only. The button swaps
+  chevron-up for chevron-down and carries "Hide goal and victory conditions" / "Show goal and
+  victory conditions".
 - The phase pill and the "N threads" count are **removed** from the hero. The phase stays readable
   from the breadcrumb and the sidebar.
-- The thread list keeps its current behavior: a click opens that member thread.
+- A click on a thread row opens that member thread.
 - Not-found stays: an unresolved battle, and a battle whose orchestrator has not landed yet, both
   render the existing empty state rather than a broken chat.
 
 ### 6. Hiding the orchestrator
 
-Derive the orchestrator ids once in `packages/client-runtime/src/state/battles.ts` from the battles
-already in the shell, and filter there so every caller inherits it:
+Filter on `thread.isOrchestrator` in `packages/client-runtime/src/state/battles.ts`, once, so every
+caller inherits it. This hides the current orchestrator **and every retired one**, which is what
+makes the refresh in section 7 safe.
 
 - `partitionThreadsByBattle` and `buildSidebarBattleRows` drop orchestrator threads, which covers the
   sidebar battle members and the standalone list.
-- The battle page thread count and thread list exclude it.
-- `CommandPalette` and the inbox (`routes/_chat.index.tsx`) exclude it.
-- A direct URL to the orchestrator thread keeps working. That is the escape hatch, not a surface.
+- The battle page thread list excludes them, including the archived ones a refresh leaves behind.
+  Without this an old orchestrator would show up in the member list wearing an "Archived" label.
+- `CommandPalette` and the inbox (`routes/_chat.index.tsx`) exclude them.
+- A direct URL to an orchestrator thread keeps working, and a retired one stays readable from
+  Settings → Archived. That is the way back to a conversation a refresh set aside.
 - `LegacySidebar` is untouched: it is feature-flagged and has no battle support.
 - Pull requests need no change; the orchestrator has no branch, so it cannot appear there.
+
+### 7. Refresh the orchestrator
+
+One button retires the current orchestrator and starts a fresh one, for when a conversation has run
+long or gone down a wrong path.
+
+- **Placement.** In the composer's control row, immediately left of the model picker
+  (`ChatComposer.tsx:3342`). Put it before the `noProviderAvailable` ternary, not inside its else
+  branch, so it stays available when no provider is. The picker's `triggerClassName="-ms-2.5"`
+  pulls it leftward and will need review once something sits beside it.
+- **Visibility.** Only on a thread with `isOrchestrator`. Every other thread's composer is
+  unchanged.
+- **What it does.** A `battle.orchestrator.refresh` command that archives the current orchestrator,
+  creates a new one the same way section 2 does, and points `orchestratorThreadId` at it. The
+  reactor already owns creation; refresh is the same path with an archive in front.
+- **Archive, not delete.** The old conversation stays readable in Settings → Archived. Deleting it
+  would be an unrecoverable loss of the reasoning behind decisions the battle already acted on.
+- **Confirm only when there is something to lose.** An orchestrator with no messages refreshes on
+  the click. One with messages asks first, and the dialog says the conversation will be archived,
+  not deleted.
+- **Report-back.** Pending reports aimed at the retired orchestrator are dropped, not redirected.
+  A fresh orchestrator has no context for a reply to a question it never asked.
 
 ## Risks
 
@@ -169,7 +238,8 @@ Add these to the battle. Sizes are provisional until each is planned.
 | The orchestrator receives a member's reply automatically when the turn it started finishes            | ~4   |
 | The orchestrator can read a member thread's recent messages on demand                                 | ~2   |
 | The orchestrator thread is hidden from the sidebar, the inbox, and the command palette                | ~2   |
-| The battle page hosts the orchestrator chat under a centered battle context that hides away to title plus threads | ~3   |
+| The battle page hosts the orchestrator chat under a fixed, centered battle context overlay that hides away to title plus threads | ~4   |
+| One button refreshes the orchestrator: the old thread is archived and a fresh one takes its place | ~3   |
 | Repo checks pass: typecheck, lint, and affected tests                                                 | ~1   |
 
 ## Verify
@@ -179,9 +249,12 @@ Add these to the battle. Sizes are provisional until each is planned.
    receipts, never on sleeps.
 2. MCP handler tests: a member thread is refused the orchestrator tools; the orchestrator is refused
    a target outside its battle; a send to a busy target queues instead of failing.
-3. Decider test: a second `battle.orchestrator.set` on one battle is refused.
-4. `pnpm --filter @t3tools/web typecheck`, targeted lint, and the web tests that cover the sidebar and
+3. Decider tests: `battle.orchestrator.set` refuses a thread outside the battle and a thread that
+   is not flagged `isOrchestrator`; a refresh leaves exactly one current orchestrator.
+4. Client test: a retired orchestrator stays out of the sidebar, the battle page thread list, the
+   inbox and the command palette after a refresh archives it.
+5. `pnpm --filter @t3tools/web typecheck`, targeted lint, and the web tests that cover the sidebar and
    battle logic.
-5. One manual pass in a real client over the combined page — the battle context, the hide-away, the
+6. One manual pass in a real client over the combined page — the battle context, the hide-away, the
    orchestrator chat and the member navigation in the same view. This is also the pass the
    battle-page work still owed; it is no longer a separate check.

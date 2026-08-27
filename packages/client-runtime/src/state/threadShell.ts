@@ -151,14 +151,21 @@ export function createEnvironmentThreadShellAtoms(input: {
         const orchestrators = get(environmentOrchestratorThreadIdsAtom(projectRef.environmentId));
         for (const ref of refs) {
           const key = threadKey(ref);
-          if (seen.has(key) || orchestrators.has(ref.threadId)) {
+          if (seen.has(key)) {
             continue;
           }
           seen.add(key);
           const thread = get(threadShellAtomFamily(key));
-          if (thread !== null) {
-            next.push(thread);
+          if (thread === null) {
+            continue;
           }
+          // The battle's current manager is named by the battle; a manager a
+          // refresh retired is only known from its own flag, which outlives the
+          // binding. Both are filtered here so neither reads as a member.
+          if (thread.isOrchestrator === true || orchestrators.has(ref.threadId)) {
+            continue;
+          }
+          next.push(thread);
         }
       }
       if (arrayElementsEqual(previous, next)) {
@@ -189,7 +196,14 @@ export function createEnvironmentThreadShellAtoms(input: {
         return [];
       }
       const thread = get(threadShellAtomFamily(threadKey(ref)));
-      return thread === null ? [] : [thread];
+      // Same two-part filter the per-project list uses: the battle names its
+      // current manager, and a manager a refresh retired is only known from its
+      // own flag. Without the flag every past orchestrator would reappear here,
+      // which is the list the inbox and the command palette read.
+      if (thread === null || thread.isOrchestrator === true) {
+        return [];
+      }
+      return [thread];
     });
     if (arrayElementsEqual(previousThreadShells, next)) {
       return previousThreadShells;

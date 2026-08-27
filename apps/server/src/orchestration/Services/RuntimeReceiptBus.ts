@@ -82,7 +82,7 @@ export const BattleOrchestratorReadyReceipt = Schema.Struct({
   type: Schema.Literal("battle.orchestrator.ready"),
   battleId: BattleId,
   orchestratorThreadId: ThreadId,
-  source: Schema.Literals(["created", "backfilled"]),
+  source: Schema.Literals(["created", "backfilled", "refreshed"]),
   createdAt: IsoDateTime,
 });
 export type BattleOrchestratorReadyReceipt = typeof BattleOrchestratorReadyReceipt.Type;

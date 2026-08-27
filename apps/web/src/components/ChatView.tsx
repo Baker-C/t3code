@@ -531,11 +531,11 @@ interface ChatViewBaseProps {
   reserveTitleBarControlInset?: boolean;
   forceExpandedMobileComposer?: boolean;
   /**
-   * Content pinned above the transcript, inside the scroll container, so it
-   * scrolls away as the conversation grows. The battle page puts its battle
-   * context here.
+   * Content fixed over the top of the transcript. It does not scroll: the
+   * timeline is inset by the overlay's measured height so the first message
+   * clears it. The battle page puts its battle context here.
    */
-  header?: ReactNode;
+  overlay?: ReactNode;
 }
 
 type ChatViewProps =
@@ -1218,7 +1218,7 @@ function ChatViewContent(props: ChatViewProps) {
     onDiffPanelOpen,
     reserveTitleBarControlInset = true,
     forceExpandedMobileComposer = false,
-    header = null,
+    overlay = null,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
@@ -1421,6 +1421,8 @@ function ChatViewContent(props: ChatViewProps) {
   const legendListRef = useRef<LegendListRef | null>(null);
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  const [overlayElement, setOverlayElement] = useState<HTMLDivElement | null>(null);
+  const [overlayHeight, setOverlayHeight] = useState(0);
   const isAtEndRef = useRef(true);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
@@ -1445,6 +1447,29 @@ function ChatViewContent(props: ChatViewProps) {
     observer.observe(composerOverlayElement);
     return () => observer.disconnect();
   }, [composerOverlayElement]);
+
+  // The top overlay's height feeds the timeline's start inset. It changes when
+  // the battle context hides away, so it is measured rather than assumed.
+  useLayoutEffect(() => {
+    if (!overlayElement) {
+      setOverlayHeight(0);
+      return;
+    }
+
+    const updateHeight = () => {
+      const nextHeight = Math.ceil(overlayElement.getBoundingClientRect().height);
+      setOverlayHeight((currentHeight) =>
+        currentHeight === nextHeight ? currentHeight : nextHeight,
+      );
+    };
+
+    updateHeight();
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(overlayElement);
+    return () => observer.disconnect();
+  }, [overlayElement]);
 
   const terminalUiState = useTerminalUiStateStore((state) =>
     selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef),
@@ -6411,6 +6436,20 @@ function ChatViewContent(props: ChatViewProps) {
             </div>
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
+              {/*
+                Fixed overlay over the timeline. It sits below the provider
+                status banner (z-20) and is opaque rather than blurred, because
+                a blurred layer over a virtualized list repaints every scroll
+                frame.
+              */}
+              {overlay !== null ? (
+                <div
+                  ref={setOverlayElement}
+                  className="pointer-events-none absolute inset-x-0 top-0 z-10 border-b border-border/60 bg-background"
+                >
+                  <div className="pointer-events-auto">{overlay}</div>
+                </div>
+              ) : null}
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 agentPanelModel={agentPanelModel}
@@ -6449,7 +6488,7 @@ function ChatViewContent(props: ChatViewProps) {
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
                 loadEarlier={loadEarlierTurns}
-                header={header}
+                contentInsetStartAdjustment={overlayHeight}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

@@ -30,6 +30,10 @@ export const ProjectionThread = Schema.Struct({
   projectId: ProjectId,
   // Stamped at creation and never patched; null for threads outside a battle.
   battleId: Schema.optional(Schema.NullOr(BattleId)),
+  // Stamped at creation and never patched; stays set after a refresh retires
+  // the thread, so a replaced orchestrator never reads as a member. Stored as
+  // an int like the other projection booleans.
+  isOrchestrator: Schema.optional(NonNegativeInt),
   title: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,

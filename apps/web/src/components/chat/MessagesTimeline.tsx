@@ -239,10 +239,11 @@ interface MessagesTimelineProps {
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
   /**
-   * Content rendered at the top of the scroll container, above the transcript,
-   * so it scrolls away with it. Shown even when the thread has no messages yet.
+   * Space reserved at the top of the transcript for a fixed overlay drawn over
+   * it by the caller. The overlay does not scroll, so without this inset the
+   * first rows would start underneath it.
    */
-  header?: ReactNode;
+  contentInsetStartAdjustment?: number;
   /** Non-null when older turns exist beyond the loaded window. */
   loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
 }
@@ -283,7 +284,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   loadEarlier = null,
-  header = null,
+  contentInsetStartAdjustment = 0,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -561,18 +562,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
-    // A header outlives an empty transcript: a battle's orchestrator opens with
-    // no messages, and its battle context has to stay on screen regardless.
-    if (header !== null) {
+    // The overlay outlives an empty transcript: a battle's orchestrator opens
+    // with no messages, and its battle context stays drawn over the empty
+    // space, so the placeholder has to clear it.
+    if (contentInsetStartAdjustment > 0) {
       return (
         <div
           className={cn(
             "h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 sm:px-5",
             topFadeEnabled && "topbar-scroll-fade",
           )}
-          style={{ paddingBottom: contentInsetEndAdjustment }}
+          style={{
+            paddingTop: contentInsetStartAdjustment,
+            paddingBottom: contentInsetEndAdjustment,
+          }}
         >
-          {header}
           {hideEmptyPlaceholder ? null : (
             <p className="text-placeholder pt-6 text-center text-sm">
               Send a message to start the conversation.
@@ -618,7 +622,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             )}
             ListHeaderComponent={
               <>
-                {header}
+                {contentInsetStartAdjustment > 0 ? (
+                  <div aria-hidden style={{ height: contentInsetStartAdjustment }} />
+                ) : null}
                 {loadEarlier !== null ? (
                   <TimelineLoadEarlierHeader
                     loading={loadEarlier.loading}

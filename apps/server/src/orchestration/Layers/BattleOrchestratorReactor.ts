@@ -34,7 +34,14 @@ import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
 
 type BattleCreatedEvent = Extract<OrchestrationEvent, { type: "battle.created" }>;
 type ThreadSessionSetEvent = Extract<OrchestrationEvent, { type: "thread.session-set" }>;
-type ReactorEvent = BattleCreatedEvent | ThreadSessionSetEvent;
+type BattleOrchestratorRefreshRequestedEvent = Extract<
+  OrchestrationEvent,
+  { type: "battle.orchestrator-refresh-requested" }
+>;
+type ReactorEvent =
+  | BattleCreatedEvent
+  | ThreadSessionSetEvent
+  | BattleOrchestratorRefreshRequestedEvent;
 
 /**
  * Both paths that can mint an orchestrator run through one worker, so a
@@ -170,6 +177,7 @@ const make = Effect.gen(function* () {
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: null,
       worktreePath: null,
+      isOrchestrator: true,
       createdAt,
     });
     // The decider refuses a second binding, so this is also what keeps a
@@ -185,6 +193,88 @@ const make = Effect.gen(function* () {
       battleId: input.battleId,
       orchestratorThreadId: threadId,
       source: input.source,
+      createdAt,
+    });
+  });
+
+  /**
+   * Retires a battle's manager and mints its replacement. The old thread is
+   * archived rather than deleted: it keeps the reasoning behind decisions the
+   * battle already acted on, and its `isOrchestrator` flag keeps it out of the
+   * member lists it was never part of.
+   */
+  const refreshOrchestrator = Effect.fn("refreshOrchestrator")(function* (input: {
+    readonly battleId: BattleId;
+    readonly previousThreadId: ThreadId;
+  }) {
+    const battle = yield* projectionSnapshotQuery.getBattleById(input.battleId);
+    if (Option.isNone(battle) || battle.value.phase === "defeated") {
+      return;
+    }
+    // Re-read under the worker's serialization, so a double request retires one
+    // manager rather than two.
+    if (battle.value.orchestratorThreadId !== input.previousThreadId) {
+      return;
+    }
+
+    const project = yield* projectionSnapshotQuery.getProjectShellById(battle.value.projectId);
+    if (Option.isNone(project)) {
+      yield* Effect.logWarning("battle orchestrator reactor found no project for a refresh", {
+        battleId: input.battleId,
+      });
+      return;
+    }
+
+    const threadId = ThreadId.make(yield* randomUUID);
+    const createdAt = DateTime.formatIso(yield* DateTime.now);
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.create",
+      commandId: yield* serverCommandId("battle-orchestrator-refresh-create"),
+      threadId,
+      projectId: battle.value.projectId,
+      battleId: input.battleId,
+      title: ORCHESTRATOR_THREAD_TITLE,
+      modelSelection:
+        project.value.defaultModelSelection ??
+        ServerRuntimeStartup.getAutoBootstrapDefaultModelSelection(),
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      isOrchestrator: true,
+      createdAt,
+    });
+    // Compare-and-swap: a retry that arrives after this landed is refused, so
+    // the replacement minted above is never itself retired by the same request.
+    yield* orchestrationEngine.dispatch({
+      type: "battle.orchestrator.replace",
+      commandId: yield* serverCommandId("battle-orchestrator-replace"),
+      battleId: input.battleId,
+      previousThreadId: input.previousThreadId,
+      threadId,
+    });
+    // Archived only once the swap is committed, so a failure leaves the battle
+    // with a working manager rather than none.
+    yield* orchestrationEngine.dispatch({
+      type: "thread.archive",
+      commandId: yield* serverCommandId("battle-orchestrator-archive"),
+      threadId: input.previousThreadId,
+    });
+    // Replies buffered for the retired manager are dropped rather than
+    // redirected: a fresh orchestrator has no context for an answer to a
+    // question it never asked. The in-flight mark goes with them, because the
+    // settle that would have cleared it belongs to a thread this battle no
+    // longer consults - left set, it would read the replacement as forever
+    // busy. Both are safe to clear here because the worker serializes this
+    // against every flush.
+    pendingReports.delete(input.battleId);
+    orchestratorTurnInFlight.delete(input.battleId);
+    yield* receiptBus.publish({
+      type: "battle.orchestrator.ready",
+      battleId: input.battleId,
+      orchestratorThreadId: threadId,
+      source: "refreshed",
       createdAt,
     });
   });
@@ -393,6 +483,13 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+    if (input.event.type === "battle.orchestrator-refresh-requested") {
+      yield* refreshOrchestrator({
+        battleId: input.event.payload.battleId,
+        previousThreadId: input.event.payload.previousOrchestratorThreadId,
+      });
+      return;
+    }
     if (input.event.type === "battle.created") {
       yield* createOrchestratorSafely({
         battleId: input.event.payload.battleId,
@@ -470,6 +567,9 @@ const make = Effect.gen(function* () {
     yield* forkParked(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         if (event.type === "battle.created") {
+          return worker.enqueue({ source: "domain", event });
+        }
+        if (event.type === "battle.orchestrator-refresh-requested") {
           return worker.enqueue({ source: "domain", event });
         }
         if (

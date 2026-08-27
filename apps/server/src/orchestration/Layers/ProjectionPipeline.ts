@@ -783,6 +783,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             battleId: event.payload.battleId ?? null,
+            isOrchestrator: event.payload.isOrchestrator === true ? 1 : 0,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,

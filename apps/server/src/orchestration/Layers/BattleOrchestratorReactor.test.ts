@@ -168,6 +168,8 @@ const makeHarness = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly battleId: BattleId;
     readonly title?: string;
+    /** Seeds a manager the reactor did not mint, for the backfill fixtures. */
+    readonly isOrchestrator?: boolean;
   }) =>
     engine.dispatch({
       type: "thread.create",
@@ -175,6 +177,7 @@ const makeHarness = Effect.gen(function* () {
       threadId: input.threadId,
       projectId,
       battleId: input.battleId,
+      isOrchestrator: input.isOrchestrator ?? false,
       title: input.title ?? `Thread ${input.threadId}`,
       modelSelection,
       runtimeMode: DEFAULT_RUNTIME_MODE,
@@ -365,6 +368,59 @@ describe("BattleOrchestratorReactor", () => {
     ),
   );
 
+  it.live("refreshes an orchestrator by archiving the old one and binding a fresh thread", () =>
+    withHarness((harness) =>
+      Effect.gen(function* () {
+        const battleId = BattleId.make("battle-refresh");
+        yield* harness.start;
+        expect((yield* harness.nextReceipt).type).toBe("battle.orchestrator.backfill-settled");
+
+        yield* harness.createBattle({ battleId });
+        const first = expectReady(yield* harness.nextReceipt);
+
+        yield* harness.engine.dispatch({
+          type: "battle.orchestrator.refresh",
+          commandId: CommandId.make("cmd-orchestrator-refresh"),
+          battleId,
+          createdAt: nextIso(),
+        });
+
+        const refreshed = expectReady(yield* harness.nextReceipt);
+        expect(refreshed.source).toBe("refreshed");
+        expect(refreshed.orchestratorThreadId).not.toBe(first.orchestratorThreadId);
+
+        const battle = yield* harness.snapshotQuery.getBattleById(battleId);
+        if (Option.isSome(battle)) {
+          expect(battle.value.orchestratorThreadId).toBe(refreshed.orchestratorThreadId);
+        }
+
+        // Archived rather than deleted. Archiving is what takes the retired
+        // thread out of every shell-driven list; the conversation itself stays
+        // readable from the archive.
+        const shell = yield* harness.snapshotQuery.getShellSnapshot();
+        expect(shell.threads.some((thread) => thread.id === first.orchestratorThreadId)).toBe(
+          false,
+        );
+
+        const archived = yield* harness.snapshotQuery.getArchivedShellSnapshot();
+        const retired = archived.threads.find((thread) => thread.id === first.orchestratorThreadId);
+        expect(retired).toBeDefined();
+        expect(retired?.archivedAt).not.toBeNull();
+        // The flag outlives the binding, so unarchiving a retired manager still
+        // cannot make it read as one of the battle's members.
+        expect(retired?.isOrchestrator).toBe(true);
+
+        const replacement = shell.threads.find(
+          (thread) => thread.id === refreshed.orchestratorThreadId,
+        );
+        expect(replacement).toBeDefined();
+        expect(replacement?.archivedAt).toBeNull();
+        expect(replacement?.isOrchestrator).toBe(true);
+        expect(replacement?.worktreePath).toBeNull();
+      }),
+    ),
+  );
+
   it.live("backfills only the live, undefeated battles that have no orchestrator", () =>
     withHarness((harness) =>
       Effect.gen(function* () {
@@ -380,6 +436,7 @@ describe("BattleOrchestratorReactor", () => {
         yield* harness.createThread({
           threadId: ThreadId.make("thread-bound-orchestrator"),
           battleId: boundId,
+          isOrchestrator: true,
         });
         yield* harness.engine.dispatch({
           type: "battle.orchestrator.set",
@@ -684,6 +741,68 @@ describe("BattleOrchestratorReactor", () => {
         expect(reportMessages).toHaveLength(1);
         expect(reportMessages[0]?.text).toContain("First is done.");
         expect(reportMessages[0]?.text).toContain("Second is done.");
+      }),
+    ),
+  );
+  it.live("drops replies buffered for an orchestrator a refresh retired", () =>
+    withHarness((harness) =>
+      Effect.gen(function* () {
+        const battleId = BattleId.make("battle-refresh-drop");
+        const memberId = ThreadId.make("thread-refresh-drop");
+        yield* harness.start;
+        yield* harness.nextReceipt;
+        yield* harness.createBattle({ battleId });
+        const first = expectReady(yield* harness.nextReceipt);
+        yield* harness.createThread({ threadId: memberId, battleId, title: "Member" });
+
+        // Busy, so the member's reply buffers rather than being handed over.
+        yield* harness.setSessionStatus({
+          threadId: first.orchestratorThreadId,
+          status: "running",
+          tag: "busy",
+        });
+        yield* harness.runOrchestratorInitiatedTurn({
+          battleId,
+          threadId: memberId,
+          tag: "send-dropped",
+          reply: "Answering the question you asked.",
+        });
+        expect(expectReport(yield* harness.nextReceipt).outcome).toBe("buffered");
+
+        yield* harness.engine.dispatch({
+          type: "battle.orchestrator.refresh",
+          commandId: CommandId.make("cmd-orchestrator-refresh-drop"),
+          battleId,
+          createdAt: nextIso(),
+        });
+        const refreshed = expectReady(yield* harness.nextReceipt);
+        expect(refreshed.orchestratorThreadId).not.toBe(first.orchestratorThreadId);
+
+        // The retired manager settling is what would have released the buffer.
+        // The replacement never asked the question, so it must not be handed
+        // the answer, and the in-flight mark must not survive as a permanent
+        // "busy" on a thread that never started a turn.
+        yield* harness.setSessionStatus({
+          threadId: first.orchestratorThreadId,
+          status: "idle",
+          tag: "retired-settles",
+        });
+        yield* harness.drain;
+        expect(yield* harness.threadMessages(refreshed.orchestratorThreadId)).toHaveLength(0);
+
+        // Not wedged: a fresh member reply still reaches the replacement.
+        yield* harness.runOrchestratorInitiatedTurn({
+          battleId,
+          threadId: memberId,
+          tag: "send-after",
+          reply: "Here is the new status.",
+        });
+        expect(expectReport(yield* harness.nextReceipt).outcome).toBe("delivered");
+        const messages = yield* harness.threadMessages(refreshed.orchestratorThreadId);
+        const reports = messages.filter((message) => message.role === "user");
+        expect(reports).toHaveLength(1);
+        expect(reports[0]?.text).toContain("Here is the new status.");
+        expect(reports[0]?.text).not.toContain("Answering the question you asked.");
       }),
     ),
   );
