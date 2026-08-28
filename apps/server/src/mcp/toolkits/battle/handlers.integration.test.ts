@@ -400,4 +400,82 @@ it.layer(IntegrationLayer)("battle toolkit against the real orchestration engine
       expect(member.reason).toBe("not-orchestrator");
     }),
   );
+  it.effect("groups threads and reports the grouping back on battle_status", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("grouping");
+      yield* setOrchestrator("grouping", fixture);
+      const asOrchestrator = asCallingThread(fixture.orchestratorThreadId, [
+        "battle",
+        "battle-orchestrator",
+      ]);
+
+      const result = yield* asOrchestrator(
+        __testing.orchestratorHandlers.battle_thread_group_set({
+          groups: [
+            { threadIds: [fixture.callerThreadId, fixture.mateThreadId] },
+            // A group of one is already the default, so it is dropped.
+            { threadIds: [fixture.callerThreadId] },
+          ],
+        }),
+      );
+      expect(result.groups).toEqual([[fixture.callerThreadId, fixture.mateThreadId]]);
+
+      // The same grouping the battle UI shows, read back through the tool the
+      // agent is told to re-read before regrouping.
+      const status = yield* asOrchestrator(__testing.handlers.battle_status());
+      expect(status.threadGroups).toEqual([[fixture.callerThreadId, fixture.mateThreadId]]);
+    }),
+  );
+
+  it.effect("refuses a grouping that names a thread outside the battle", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("grouping-refusal");
+      yield* setOrchestrator("grouping-refusal", fixture);
+
+      const error = yield* asCallingThread(fixture.orchestratorThreadId, [
+        "battle",
+        "battle-orchestrator",
+      ])(
+        __testing.orchestratorHandlers
+          .battle_thread_group_set({
+            groups: [
+              { threadIds: [fixture.callerThreadId, ThreadId.make("thread-caller-grouping")] },
+            ],
+          })
+          .pipe(Effect.flip),
+      );
+      expect(error.reason).toBe("target-not-in-battle");
+    }),
+  );
+
+  it.effect("refuses grouping from a member that does not manage the battle", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("grouping-member");
+      yield* setOrchestrator("grouping-member", fixture);
+
+      const error = yield* asCallingThread(fixture.callerThreadId)(
+        __testing.orchestratorHandlers
+          .battle_thread_group_set({
+            groups: [{ threadIds: [fixture.callerThreadId, fixture.mateThreadId] }],
+          })
+          .pipe(Effect.flip),
+      );
+      expect(error.reason).toBe("not-orchestrator");
+    }),
+  );
+
+  it.effect("reports an unqueued battle as having no actions", () =>
+    Effect.gen(function* () {
+      const fixture = yield* seedBattle("queue-status");
+      yield* setOrchestrator("queue-status", fixture);
+
+      const status = yield* asCallingThread(fixture.orchestratorThreadId, [
+        "battle",
+        "battle-orchestrator",
+      ])(__testing.handlers.battle_status());
+      // Actions only exist for a battle the user put in their queue.
+      expect(status.queue.queued).toBe(false);
+      expect(status.queue.actions).toEqual([]);
+    }),
+  );
 });

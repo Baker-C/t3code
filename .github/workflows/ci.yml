@@ -60,7 +60,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The suite ran 9m02s against a 10m cap before the battle queue added ~90
+    # tests, so it had under a minute of headroom and was already cancelled
+    # once. Raised to leave room to grow while still catching a true hang.
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6

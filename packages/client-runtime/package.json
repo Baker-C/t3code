@@ -59,6 +59,10 @@
       "types": "./src/state/battles.ts",
       "default": "./src/state/battles.ts"
     },
+    "./state/queue-commands": {
+      "types": "./src/state/queueCommands.ts",
+      "default": "./src/state/queueCommands.ts"
+    },
     "./state/battle-commands": {
       "types": "./src/state/battleCommands.ts",
       "default": "./src/state/battleCommands.ts"

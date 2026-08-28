@@ -154,3 +154,9 @@ One consequence worth knowing: for threads sharing a checkout, a turn's diff is 
 moment that turn started rather than from the previous turn, so a sibling's interleaved work does
 not show up in yours. Restoring an earlier checkpoint is refused when another thread sharing the
 checkout has done work since the point you are restoring to, rather than silently discarding it.
+
+## Cycling through several battles
+
+Once you are running more than a couple of battles at once, the [battle queue](./battle-queue.md)
+gives you an ordered focus list of the ones you want to be moving between right now, so you can
+hand off in one and land straight in the next.

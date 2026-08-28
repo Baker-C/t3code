@@ -824,6 +824,15 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     sequence: NonNegativeInt,
     battleId: BattleId,
   }),
+  /**
+   * The lap ended. It clears the skip on every entry at once, which no
+   * per-entry upsert can express, and the client already holds the entries —
+   * so this carries no payload and is applied locally.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("queue-lap-reset"),
+    sequence: NonNegativeInt,
+  }),
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
 
