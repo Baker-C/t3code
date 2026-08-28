@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { BattleId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  BattleId,
+  DEFAULT_QUEUE_WAKE_RULE,
+  ProjectId,
+  ProviderInstanceId,
+  QueueActionId,
+  ThreadId,
+  resolveQueueEntries,
+} from "@t3tools/contracts";
+import type { BattleQueueEntry } from "@t3tools/contracts";
 import type { OrchestrationShellSnapshot, OrchestrationShellStreamEvent } from "@t3tools/contracts";
 
 import { applyShellStreamEvent } from "./shellReducer.ts";
@@ -45,6 +54,16 @@ const stubThread = {
   hasActionableProposedPlan: false,
   session: null,
 } as const;
+
+const stubQueueEntry: BattleQueueEntry = {
+  battleId: BattleId.make("battle-1"),
+  projectId: ProjectId.make("project-1"),
+  orderKey: 0,
+  skippedInLap: false,
+  actions: [],
+  addedAt: "2026-04-01T00:00:00.000Z",
+  updatedAt: "2026-04-01T00:00:00.000Z",
+};
 
 const stubBattle = {
   id: BattleId.make("battle-1"),
@@ -268,5 +287,102 @@ describe("applyShellStreamEvent", () => {
     const unknownEvent = { kind: "unknown-future-event", sequence: 99 } as any;
     const next = applyShellStreamEvent(baseSnapshot, unknownEvent);
     expect(next).toBe(baseSnapshot);
+  });
+  describe("queue entries", () => {
+    it("adds a queued battle", () => {
+      const next = applyShellStreamEvent(baseSnapshot, {
+        kind: "queue-entry-upserted",
+        sequence: 20,
+        entry: stubQueueEntry,
+      });
+
+      expect(resolveQueueEntries(next.queueEntries)).toHaveLength(1);
+      expect(next.snapshotSequence).toBe(20);
+    });
+
+    it("replaces an entry rather than duplicating it", () => {
+      const withEntry: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        queueEntries: [stubQueueEntry],
+      };
+
+      const next = applyShellStreamEvent(withEntry, {
+        kind: "queue-entry-upserted",
+        sequence: 21,
+        entry: {
+          ...stubQueueEntry,
+          actions: [
+            {
+              id: QueueActionId.make("action-1"),
+              threadIds: [ThreadId.make("thread-1")],
+              wakeRule: DEFAULT_QUEUE_WAKE_RULE,
+              outcome: "completed",
+              startedAt: "2026-04-01T00:00:00.000Z",
+              readyAt: "2026-04-01T00:00:01.000Z",
+            },
+          ],
+        },
+      });
+
+      const entries = resolveQueueEntries(next.queueEntries);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.actions).toHaveLength(1);
+    });
+
+    it("drops a removed entry", () => {
+      const withEntry: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        queueEntries: [stubQueueEntry],
+      };
+
+      const next = applyShellStreamEvent(withEntry, {
+        kind: "queue-entry-removed",
+        sequence: 22,
+        battleId: BattleId.make("battle-1"),
+      });
+
+      expect(resolveQueueEntries(next.queueEntries)).toEqual([]);
+    });
+
+    it("clears every skip on a lap reset", () => {
+      const withSkips: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        queueEntries: [
+          { ...stubQueueEntry, skippedInLap: true },
+          {
+            ...stubQueueEntry,
+            battleId: BattleId.make("battle-2"),
+            orderKey: 1,
+            skippedInLap: true,
+          },
+        ],
+      };
+
+      // The lap clears every entry at once, so the server sends no payload and
+      // the client applies it locally.
+      const next = applyShellStreamEvent(withSkips, { kind: "queue-lap-reset", sequence: 23 });
+
+      expect(resolveQueueEntries(next.queueEntries).map((e) => e.skippedInLap)).toEqual([
+        false,
+        false,
+      ]);
+      expect(next.snapshotSequence).toBe(23);
+    });
+
+    it("ignores a stale queue event without mutating the snapshot", () => {
+      const withEntry: OrchestrationShellSnapshot = {
+        ...baseSnapshot,
+        snapshotSequence: 30,
+        queueEntries: [stubQueueEntry],
+      };
+
+      const next = applyShellStreamEvent(withEntry, {
+        kind: "queue-entry-removed",
+        sequence: 29,
+        battleId: BattleId.make("battle-1"),
+      });
+
+      expect(next).toBe(withEntry);
+    });
   });
 });
