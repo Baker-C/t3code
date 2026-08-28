@@ -13,6 +13,12 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  // Each battle queue flag decodes to `true` when absent, so the fixture stores
+  // `false` to prove a persisted value wins over the decoding default.
+  battleQueueEnabled: false,
+  battleQueueProjectPriorityEnabled: false,
+  battleQueueBattlePriorityEnabled: false,
+  battleQueueRoundRobinEnabled: false,
   browserDefaultViewport: { _tag: "preset", width: 1024, height: 600, presetId: "nest-hub" },
   browserDefaultZoomFactor: 1.25,
   browserDefaultAppearance: "dark",
