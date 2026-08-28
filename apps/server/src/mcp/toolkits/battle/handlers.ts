@@ -1,5 +1,7 @@
 import {
   battleLinesDrawn,
+  BattleThreadGroupId,
+  resolveQueueEntries,
   CommandId,
   IsoDateTime,
   type BattleId,
@@ -173,6 +175,9 @@ const readStatus = Effect.fn("BattleToolkit.readStatus")(function* (scope: {
   const members: ReadonlyArray<OrchestrationThreadShell> = shell.threads.filter(
     (thread) => thread.battleId === scope.battle.id,
   );
+  const queueEntry =
+    resolveQueueEntries(shell.queueEntries).find((entry) => entry.battleId === scope.battle.id) ??
+    null;
   return {
     battleId: scope.battle.id,
     title: scope.battle.title,
@@ -189,6 +194,16 @@ const readStatus = Effect.fn("BattleToolkit.readStatus")(function* (scope: {
       worktreePath: thread.worktreePath,
       sessionStatus: thread.session?.status ?? null,
     })),
+    threadGroups: (scope.battle.threadGroups ?? []).map((group) => group.threadIds),
+    queue: {
+      queued: queueEntry !== null,
+      actions: (queueEntry?.actions ?? []).map((action) => ({
+        actionId: action.id,
+        threadIds: action.threadIds,
+        wakeRule: action.wakeRule,
+        outcome: action.outcome,
+      })),
+    },
   };
 });
 
@@ -340,6 +355,57 @@ const orchestratorHandlers = {
           createdAt: message.createdAt,
         })),
       };
+    }),
+  battle_thread_group_set: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* requireOrchestratorScope();
+      const crypto = yield* Crypto.Crypto;
+      // Singletons are dropped by the decider, so only the real groups need
+      // an id. Minting here keeps the tool's input free of ids the agent
+      // would otherwise have to invent and keep stable across calls.
+      const groups = yield* Effect.forEach(
+        input.groups.filter((group) => group.threadIds.length > 1),
+        (group) =>
+          crypto.randomUUIDv4.pipe(
+            Effect.orDie,
+            Effect.map((uuid) => ({
+              id: BattleThreadGroupId.make(uuid),
+              threadIds: group.threadIds,
+            })),
+          ),
+      );
+      // Every named thread has to be a live member of this battle. The decider
+      // enforces it too; checking here turns it into a tool error the agent can
+      // act on instead of an opaque dispatch failure.
+      for (const group of groups) {
+        for (const threadId of group.threadIds) {
+          yield* requireMemberTarget(scope, threadId);
+        }
+      }
+      const { commandId } = yield* serverIds("battle-thread-group-set");
+      yield* dispatch({
+        type: "battle.thread-groups.set",
+        commandId,
+        battleId: scope.battle.id,
+        groups,
+      });
+      return {
+        battleId: scope.battle.id,
+        groups: groups.map((group) => group.threadIds),
+      };
+    }),
+  battle_queue_action_wake_rule_set: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* requireOrchestratorScope();
+      const { commandId } = yield* serverIds("battle-queue-action-wake-rule-set");
+      yield* dispatch({
+        type: "battle.queue.action.wake-rule.set",
+        commandId,
+        battleId: scope.battle.id,
+        actionId: input.actionId,
+        wakeRule: input.wakeRule,
+      });
+      return { battleId: scope.battle.id, actionId: input.actionId };
     }),
 } satisfies Parameters<typeof BattleOrchestratorToolkit.toLayer>[0];
 

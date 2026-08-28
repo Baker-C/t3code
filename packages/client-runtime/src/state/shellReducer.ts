@@ -52,6 +52,29 @@ export function applyShellStreamEvent(
         threads: Arr.filter(snapshot.threads, (t) => t.id !== event.threadId),
         snapshotSequence: event.sequence,
       };
+    case "queue-entry-upserted": {
+      const existing = snapshot.queueEntries ?? [];
+      const queueEntries = existing.some((e) => e.battleId === event.entry.battleId)
+        ? Arr.map(existing, (e) => (e.battleId === event.entry.battleId ? event.entry : e))
+        : Arr.append(existing, event.entry);
+      return { ...snapshot, queueEntries, snapshotSequence: event.sequence };
+    }
+    case "queue-entry-removed":
+      return {
+        ...snapshot,
+        queueEntries: Arr.filter(snapshot.queueEntries ?? [], (e) => e.battleId !== event.battleId),
+        snapshotSequence: event.sequence,
+      };
+    case "queue-lap-reset":
+      // Applied locally: the lap clears the skip on every entry at once, and
+      // the client already holds them all, so the server sends no payload.
+      return {
+        ...snapshot,
+        queueEntries: Arr.map(snapshot.queueEntries ?? [], (e) =>
+          e.skippedInLap ? { ...e, skippedInLap: false } : e,
+        ),
+        snapshotSequence: event.sequence,
+      };
     default:
       return snapshot;
   }

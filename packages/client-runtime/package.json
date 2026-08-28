@@ -51,9 +51,17 @@
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"
     },
+    "./state/battle-queue": {
+      "types": "./src/state/battleQueue.ts",
+      "default": "./src/state/battleQueue.ts"
+    },
     "./state/battles": {
       "types": "./src/state/battles.ts",
       "default": "./src/state/battles.ts"
+    },
+    "./state/queue-commands": {
+      "types": "./src/state/queueCommands.ts",
+      "default": "./src/state/queueCommands.ts"
     },
     "./state/battle-commands": {
       "types": "./src/state/battleCommands.ts",

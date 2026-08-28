@@ -1,6 +1,9 @@
 import {
   BattleId,
   BattlePhase,
+  QueueActionId,
+  QueueActionOutcome,
+  QueueWakeRule,
   IsoDateTime,
   MessageId,
   OrchestrationMessageRole,
@@ -69,6 +72,25 @@ const BattleMemberThread = Schema.Struct({
   sessionStatus: Schema.NullOr(TrimmedNonEmptyString),
 });
 
+/**
+ * One in-flight or ready action, so the orchestrator can name it when setting
+ * a wake rule and can see what it already asked for.
+ */
+const BattleQueueActionSummary = Schema.Struct({
+  actionId: QueueActionId,
+  threadIds: Schema.Array(ThreadId),
+  wakeRule: QueueWakeRule,
+  // Null while the action is still in flight; set once its wake rule fired.
+  outcome: Schema.NullOr(QueueActionOutcome),
+});
+
+const BattleQueueSummary = Schema.Struct({
+  // False when the user has not put this battle in their queue. Actions only
+  // exist for a queued battle, so the list is empty when this is false.
+  queued: Schema.Boolean,
+  actions: Schema.Array(BattleQueueActionSummary),
+});
+
 const BattleStatusResult = Schema.Struct({
   battleId: BattleId,
   title: TrimmedNonEmptyString,
@@ -78,6 +100,10 @@ const BattleStatusResult = Schema.Struct({
   battleLinesDrawn: Schema.Boolean,
   victoryConditions: Schema.Array(VictoryCondition),
   threads: Schema.Array(BattleMemberThread),
+  // The authored partition of this battle's threads. Groups of one are not
+  // stored, so a thread missing here is in a group of its own.
+  threadGroups: Schema.Array(Schema.Array(ThreadId)),
+  queue: BattleQueueSummary,
 });
 export type BattleStatusResult = typeof BattleStatusResult.Type;
 
@@ -228,9 +254,66 @@ export const BattleThreadReadTool = Tool.make("battle_thread_read", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
+const BattleThreadGroupInput = Schema.Struct({
+  threadIds: Schema.Array(ThreadId),
+}).annotate({
+  description: "One group: the threads you hand off together as a single unit of work.",
+});
+
+const BattleThreadGroupsResult = Schema.Struct({
+  battleId: BattleId,
+  groups: Schema.Array(Schema.Array(ThreadId)),
+}).annotate({
+  description:
+    "The grouping is recorded and is what the battle UI now shows. Groups of one are dropped, because a thread no group names is already in a group of its own.",
+});
+
+const QueueActionWakeRuleResult = Schema.Struct({
+  battleId: BattleId,
+  actionId: QueueActionId,
+}).annotate({
+  description: "The wake rule is recorded for that action.",
+});
+
+export const BattleThreadGroupSetTool = Tool.make("battle_thread_group_set", {
+  description:
+    "Group this battle's threads into the units you hand off together, replacing the whole grouping each time you call it. A group is the set of threads one instruction puts in flight at once; when any of them starts a turn, the queue opens a single action covering the group rather than one per thread. Send only the groups holding two or more threads — a thread you leave out stays in a group of its own, which is the default. Only the battle's orchestrator may call this, every thread named must be a live member of this battle, and no thread may appear twice. The same grouping is editable by the user by drag and drop, so re-read battle_status before regrouping rather than assuming your last call still stands.",
+  parameters: Schema.Struct({
+    groups: Schema.Array(BattleThreadGroupInput),
+  }),
+  success: BattleThreadGroupsResult,
+  failure: BattleToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Group battle threads")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
+export const BattleQueueActionWakeRuleSetTool = Tool.make("battle_queue_action_wake_rule_set", {
+  description:
+    "Set what makes one in-flight action want the user back. 'all' (the default) waits for every thread in the action to be idle and awaiting input; 'any' wakes on the first one back; 'thread' wakes on one named thread, which must be in that action. Use this when you park work and know you do not need every thread's answer to make the next decision. Only the battle's orchestrator may call it, and only for an action that has not settled yet — a settled action has already woken the user. Action ids come from battle_status.",
+  parameters: Schema.Struct({
+    actionId: QueueActionId,
+    wakeRule: QueueWakeRule,
+  }),
+  success: QueueActionWakeRuleResult,
+  failure: BattleToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Set an action's wake rule")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
 /**
  * The cross-thread half of the battle surface, split out so it can be granted
  * on its own capability. Every tool here reaches into a thread other than the
  * caller's, which is exactly what the plain `battle` capability must not buy.
  */
-export const BattleOrchestratorToolkit = Toolkit.make(BattleThreadSendTool, BattleThreadReadTool);
+export const BattleOrchestratorToolkit = Toolkit.make(
+  BattleThreadSendTool,
+  BattleThreadReadTool,
+  BattleThreadGroupSetTool,
+  BattleQueueActionWakeRuleSetTool,
+);

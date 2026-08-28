@@ -94,6 +94,7 @@ const projectionLayer = (battleId: BattleId | null, orchestratorThreadId: Thread
     getWorktreeOccupancy: () => Effect.succeed({ threads: [], projects: [] }),
     getFullThreadDiffContext: () => Effect.die("unexpected getFullThreadDiffContext"),
     getThreadDetailById: () => Effect.die("unexpected getThreadDetailById"),
+    getQueueEntryByBattleId: () => Effect.succeed(Option.none()),
     getBattleById: (requestedBattleId) =>
       Effect.succeed(Option.some(battle(requestedBattleId, orchestratorThreadId))),
     getThreadDetailSnapshot: () => Effect.die("unexpected getThreadDetailSnapshot"),

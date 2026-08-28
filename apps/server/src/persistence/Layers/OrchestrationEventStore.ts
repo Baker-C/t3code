@@ -10,6 +10,7 @@ import {
   OrchestrationEventMetadata,
   OrchestrationEventType,
   ProjectId,
+  QueueId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -36,7 +37,7 @@ const EventMetadataFromJsonString = Schema.fromJsonString(OrchestrationEventMeta
 const AppendEventRequestSchema = Schema.Struct({
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  streamId: Schema.Union([ProjectId, ThreadId, BattleId]),
+  streamId: Schema.Union([ProjectId, ThreadId, BattleId, QueueId]),
   type: OrchestrationEventType,
   causationEventId: Schema.NullOr(EventId),
   correlationId: Schema.NullOr(CommandId),

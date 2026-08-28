@@ -10,6 +10,7 @@ This is a living glossary for T3 Code. It explains what common terms mean in thi
 - [Thread timeline](#thread-timeline)
 - [Orchestration](#orchestration)
 - [Battles](#battles)
+- [Battle queue](#battle-queue)
 - [Provider runtime](#provider-runtime)
 - [Checkpointing](#checkpointing)
 
@@ -129,6 +130,50 @@ Four guards, all load-bearing: only orchestrator-initiated turns report; the orc
 
 Per-key mutual exclusion for provider turns, in [TurnGate.ts][28]. The key is the thread's resolved working directory (`worktreePath`, else the project's workspace root), **not** the battle id: two battle threads in different worktrees run concurrently, while two threads sharing one worktree serialize even across battles. The permit is held for the whole turn fiber and released on completion, failure, or interruption. Waiting threads surface as `thread.turnQueued` in the read model. Whether a cwd is shared is answered by [SharedWorktree.ts][29], which also drives the shared-cwd checkpoint policy: pre-turn refs, pre→post turn diffs, and a revert guard.
 
+### Battle queue
+
+An environment-scoped, priority-ordered working set of battles: what the user is cycling through right now. A fourth orchestration aggregate beside `project`, `thread` and `battle`, with its own `queue` aggregate kind in [the contracts][1]. See [the user-facing page][33].
+
+#### Queue entry
+
+One battle's slot. A battle appears exactly once no matter how many actions it holds, which is what keeps the list short enough to cycle quickly. Rows are removed outright rather than tombstoned — the queue is deliberately disposable and the battle is the durable record. The projection row is written by [ProjectionPipeline.ts][11] through [ProjectionQueueEntries.ts][34].
+
+Auto-drop on `battle.declare-defeat` and `battle.delete` is decided in [decider.ts][8] rather than by a reactor, so the drop is atomic with the phase change: there is no window in which the queue points at a battle that is gone. `battle.reopen` deliberately does **not** re-add.
+
+#### Action
+
+A unit of kicked-off work inside a battle: the threads one hand-off put in flight, plus its wake rule. Created by work _starting_, never by a thread existing — a battle with five idle threads has no actions. Actions ride inline on the entry as JSON, like victory conditions do on a battle.
+
+[BattleQueueReadinessReactor.ts][35] owns both halves. It opens an action on `thread.turn-start-requested` for a thread in a queued battle, forming it around that thread's authored [group](#thread-group) rather than the single thread, and widening the open action when a second thread of the same group starts. It settles the action when the wake rule fires, reading state back through [ProjectionSnapshotQuery.ts][31] — turn settling emits no event, so it triggers on `thread.session-set` leaving `running`, the same signal [report-back](#report-back) uses.
+
+There is no startup backfill: work that started before the reactor did has already ended, and reconstructing actions for it would invent hand-offs the user never made.
+
+#### Wake rule
+
+What makes an action available again: `all` (every thread idle and awaiting input), `any` (the first thread back), or `thread` (one named thread, which must be in the action). `all` is the default and reproduces the base availability rule exactly; the others relax it. Authored either in the battle UI or by the orchestrator through `battle_queue_action_wake_rule_set` in [the battle toolkit handlers][27].
+
+A thread waiting on a [TurnGate](#turngate) permit counts as busy, so its action simply waits longer. There is no separate "blocked" state — from the queue's point of view a thread is either working or wanting you.
+
+#### Action outcome
+
+How a settled action wants you: `completed`, `needs-clarification`, or `errored`. All three count as ready. `errored` wins the derivation because it is the one that must not be missed, and it is marked on the row — but it never promotes the row out of its tier, because a failure must not override the user's judgement about what matters.
+
+#### Thread group
+
+The authored partition of a battle's threads into hand-off units, stored on the battle. Stored **sparsely**: only groups holding more than one thread are kept, so a thread no group names is in a group of its own and enlisting a thread needs no write. Two authors write the same `battle.thread-groups.set` command — drag-and-drop in the battle UI, and `battle_thread_group_set` in [the battle toolkit handlers][27] — so there is one source of truth and no merge.
+
+#### Compounded priority
+
+Project priority plus battle priority, each 0–3, giving 0–6. `0` means _unset_, not lowest. The two are summed rather than ranked lexicographically, so a top-priority personal battle can beat a low-priority work one. The score is never surfaced: the UI shows the ordering only. Ordering, merging across environments, and the settings flags that switch a dimension off all live in `battleQueue.ts` in [client-runtime][36], shared by web and mobile.
+
+#### Lap
+
+One pass of the cycle button through every eligible battle. A skipped battle is passed over for the rest of the lap; when no eligible battle remains unskipped the lap resets and every skip clears. The reset is decided in the same breath as the skip that exhausts it, so the cycle button is never briefly dead.
+
+A fresh readiness signal clears a battle's skip early — new work is new information, so it earns its place back in the lap.
+
+The degenerate case is real: with exactly one eligible battle, skipping it is also the skip that ends the lap, so it clears itself immediately. The UI disables the skip control rather than letting it no-op; see `queueSkipAvailability` in [client-runtime][36].
+
 ### Provider runtime
 
 The live backend agent implementation and its event stream. The main service is [ProviderService.ts][14], the adapter contract is [ProviderAdapter.ts][15], and the overview is in [providers.md][16].
@@ -229,3 +274,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [30]: ../../apps/server/src/orchestration/Layers/BattleOrchestratorReactor.ts
 [31]: ../../apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
 [32]: ../../apps/server/src/orchestration/battleOrchestrator.ts
+[33]: ../user/battle-queue.md
+[34]: ../../apps/server/src/persistence/Layers/ProjectionQueueEntries.ts
+[35]: ../../apps/server/src/orchestration/Layers/BattleQueueReadinessReactor.ts
+[36]: ../../packages/client-runtime/src/state/battleQueue.ts

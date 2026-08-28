@@ -1,15 +1,19 @@
 import type {
   BattleId,
+  BattleQueueEntry,
   OrchestrationBattle,
   OrchestrationCommand,
   OrchestrationProject,
   OrchestrationReadModel,
   OrchestrationThread,
   ProjectId,
+  QueueAction,
+  QueueActionId,
   ThreadId,
   VictoryCondition,
   VictoryConditionId,
 } from "@t3tools/contracts";
+import { resolveQueueEntries } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
@@ -112,6 +116,108 @@ export function requireBattleNotDefeated(input: {
         : Effect.succeed(battle),
     ),
   );
+}
+
+export function findQueueEntryByBattleId(
+  readModel: OrchestrationReadModel,
+  battleId: BattleId,
+): BattleQueueEntry | undefined {
+  return resolveQueueEntries(readModel.queueEntries).find((entry) => entry.battleId === battleId);
+}
+
+/** A battle that is currently in the queue. */
+export function requireQueueEntry(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly battleId: BattleId;
+}): Effect.Effect<BattleQueueEntry, OrchestrationCommandInvariantError> {
+  const entry = findQueueEntryByBattleId(input.readModel, input.battleId);
+  if (entry) {
+    return Effect.succeed(entry);
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Battle '${input.battleId}' is not in the queue for command '${input.command.type}'.`,
+    ),
+  );
+}
+
+/**
+ * Adding a battle already in the queue is refused rather than treated as a
+ * no-op: silently succeeding would let a double click reset the priority the
+ * first click set.
+ */
+export function requireQueueEntryAbsent(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly battleId: BattleId;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (!findQueueEntryByBattleId(input.readModel, input.battleId)) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(input.command.type, `Battle '${input.battleId}' is already in the queue.`),
+  );
+}
+
+export function requireQueueAction(input: {
+  readonly command: OrchestrationCommand;
+  readonly entry: BattleQueueEntry;
+  readonly actionId: QueueActionId;
+}): Effect.Effect<QueueAction, OrchestrationCommandInvariantError> {
+  const action = input.entry.actions.find((candidate) => candidate.id === input.actionId);
+  if (action) {
+    return Effect.succeed(action);
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Action '${input.actionId}' does not exist on queued battle '${input.entry.battleId}'.`,
+    ),
+  );
+}
+
+/**
+ * A thread partition has to be a partition: every named thread must be a live
+ * member of the battle, and no thread may sit in two groups. A malformed
+ * grouping would make one turn open two actions, so it is refused rather than
+ * normalized — both authors can send a correct list.
+ */
+export function requireBattleThreadGroupsValid(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly battleId: BattleId;
+  readonly groups: ReadonlyArray<{ readonly threadIds: ReadonlyArray<ThreadId> }>;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  const members = new Set(
+    listThreadsByBattleId(input.readModel, input.battleId)
+      .filter((thread) => thread.deletedAt === null)
+      .map((thread) => thread.id),
+  );
+  const seen = new Set<ThreadId>();
+  for (const group of input.groups) {
+    for (const threadId of group.threadIds) {
+      if (!members.has(threadId)) {
+        return Effect.fail(
+          invariantError(
+            input.command.type,
+            `Thread '${threadId}' is not a live member of battle '${input.battleId}' and cannot be grouped in it.`,
+          ),
+        );
+      }
+      if (seen.has(threadId)) {
+        return Effect.fail(
+          invariantError(
+            input.command.type,
+            `Thread '${threadId}' appears in more than one group of battle '${input.battleId}'.`,
+          ),
+        );
+      }
+      seen.add(threadId);
+    }
+  }
+  return Effect.void;
 }
 
 export function requireBattleCondition(input: {

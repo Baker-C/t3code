@@ -210,6 +210,25 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // Battle queue. The master toggle only hides the surface: turning it off
+  // leaves the queue itself intact, so flipping it back on returns the working
+  // set you had rather than an empty list.
+  battleQueueEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Priority dimensions, each independently switchable so the queue can run
+  // flat with no tiers at all. A disabled dimension contributes 0 to the
+  // compounded score rather than being dropped, which keeps the ordering
+  // total.
+  battleQueueProjectPriorityEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  battleQueueBattlePriorityEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  // Round-robin skipping. Off means the cycle button always offers the
+  // highest-priority ready battle, and the skip control is not shown.
+  battleQueueRoundRobinEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   // Legacy plan mode. The composer's Build/Plan toggle was removed from the
   // default UI; this beta flag restores it (plus the /plan and /default slash
   // commands) for users who still rely on the old workflow.

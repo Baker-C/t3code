@@ -41,6 +41,14 @@ export type DeclareBattleDefeatInput = CommandInput<"battle.declare-defeat">;
 export type ReopenBattleInput = CommandInput<"battle.reopen">;
 export type DeleteBattleInput = CommandInput<"battle.delete">;
 export type RefreshBattleOrchestratorInput = CommandInput<"battle.orchestrator.refresh">;
+export type SetProjectPriorityInput = CommandInput<"project.priority.set">;
+export type SetBattlePriorityInput = CommandInput<"battle.priority.set">;
+export type SetBattleThreadGroupsInput = CommandInput<"battle.thread-groups.set">;
+export type AddBattleToQueueInput = CommandInput<"battle.queue.add">;
+export type RemoveBattlesFromQueueInput = CommandInput<"battle.queue.remove">;
+export type SkipQueuedBattleInput = CommandInput<"battle.queue.skip">;
+export type SetQueueActionWakeRuleInput = CommandInput<"battle.queue.action.wake-rule.set">;
+export type ClearQueueActionInput = CommandInput<"battle.queue.action.clear">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -228,6 +236,93 @@ export const refreshBattleOrchestrator: (input: RefreshBattleOrchestratorInput) 
       createdAt: metadata.createdAt,
     });
   });
+
+export const setProjectPriority: (input: SetProjectPriorityInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.setProjectPriority",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "project.priority.set",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const setBattlePriority: (input: SetBattlePriorityInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.setBattlePriority",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.priority.set",
+    commandId: yield* commandId(input),
+  });
+});
+
+/**
+ * Rewrites a battle's thread partition. Both authors send this same command:
+ * the battle UI's drag-and-drop and the orchestrator's MCP tool.
+ */
+export const setBattleThreadGroups: (input: SetBattleThreadGroupsInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.setBattleThreadGroups")(function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "battle.thread-groups.set",
+      commandId: yield* commandId(input),
+    });
+  });
+
+/** Puts a battle in the queue, dormant, at the priority you give it. */
+export const addBattleToQueue: (input: AddBattleToQueueInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.addBattleToQueue",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "battle.queue.add",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/** Clears rows. Takes a list, because removal is multi-select with select-all. */
+export const removeBattlesFromQueue: (input: RemoveBattlesFromQueueInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.removeBattlesFromQueue")(function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "battle.queue.remove",
+      commandId: yield* commandId(input),
+    });
+  });
+
+/** Passes a battle over for the rest of this lap. */
+export const skipQueuedBattle: (input: SkipQueuedBattleInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.skipQueuedBattle",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.queue.skip",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const setQueueActionWakeRule: (input: SetQueueActionWakeRuleInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.setQueueActionWakeRule")(function* (input) {
+    return yield* dispatch({
+      ...input,
+      type: "battle.queue.action.wake-rule.set",
+      commandId: yield* commandId(input),
+    });
+  });
+
+/** Consumes a ready action once you have acted on it. */
+export const clearQueueAction: (input: ClearQueueActionInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.clearQueueAction",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "battle.queue.action.clear",
+    commandId: yield* commandId(input),
+  });
+});
 
 export const createThread: (input: CreateThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.createThread",

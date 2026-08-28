@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
-import { VictoryCondition } from "@t3tools/contracts";
+import { BattleThreadGroup, VictoryCondition } from "@t3tools/contracts";
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
   DeleteProjectionBattleInput,
@@ -18,6 +18,7 @@ import {
 const ProjectionBattleDbRow = ProjectionBattle.mapFields(
   Struct.assign({
     victoryConditions: Schema.fromJsonString(Schema.Array(VictoryCondition)),
+    threadGroups: Schema.fromJsonString(Schema.Array(BattleThreadGroup)),
   }),
 );
 type ProjectionBattleDbRow = typeof ProjectionBattleDbRow.Type;
@@ -38,6 +39,8 @@ const makeProjectionBattleRepository = Effect.gen(function* () {
           phase,
           victory_conditions_json,
           orchestrator_thread_id,
+          priority,
+          thread_groups_json,
           defeated_at,
           created_at,
           updated_at,
@@ -52,6 +55,8 @@ const makeProjectionBattleRepository = Effect.gen(function* () {
           ${row.phase},
           ${JSON.stringify(row.victoryConditions)},
           ${row.orchestratorThreadId},
+          ${row.priority},
+          ${JSON.stringify(row.threadGroups)},
           ${row.defeatedAt},
           ${row.createdAt},
           ${row.updatedAt},
@@ -66,6 +71,8 @@ const makeProjectionBattleRepository = Effect.gen(function* () {
           phase = excluded.phase,
           victory_conditions_json = excluded.victory_conditions_json,
           orchestrator_thread_id = excluded.orchestrator_thread_id,
+          priority = excluded.priority,
+          thread_groups_json = excluded.thread_groups_json,
           defeated_at = excluded.defeated_at,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at,
@@ -87,6 +94,8 @@ const makeProjectionBattleRepository = Effect.gen(function* () {
           phase,
           victory_conditions_json AS "victoryConditions",
           orchestrator_thread_id AS "orchestratorThreadId",
+          priority,
+          thread_groups_json AS "threadGroups",
           defeated_at AS "defeatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -110,6 +119,8 @@ const makeProjectionBattleRepository = Effect.gen(function* () {
           phase,
           victory_conditions_json AS "victoryConditions",
           orchestrator_thread_id AS "orchestratorThreadId",
+          priority,
+          thread_groups_json AS "threadGroups",
           defeated_at AS "defeatedAt",
           created_at AS "createdAt",
           updated_at AS "updatedAt",

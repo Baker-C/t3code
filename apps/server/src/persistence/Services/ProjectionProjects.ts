@@ -11,6 +11,7 @@ import {
   ModelSelection,
   ProjectId,
   ProjectScript,
+  QueuePriority,
   ThreadEnvMode,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -27,6 +28,8 @@ export const ProjectionProject = Schema.Struct({
   defaultModelSelection: Schema.NullOr(ModelSelection),
   defaultThreadEnvMode: Schema.NullOr(ThreadEnvMode),
   faviconPath: Schema.optional(Schema.NullOr(Schema.String)),
+  // Queue priority, 0-3. 0 means unset, which is also the backfill.
+  priority: QueuePriority,
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

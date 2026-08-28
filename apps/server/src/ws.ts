@@ -555,6 +555,7 @@ const makeWsRpcLayer = (
         switch (event.type) {
           case "project.created":
           case "project.meta-updated":
+          case "project.priority-set":
             return projectUpsertOrRemove(event.payload.projectId, event.sequence);
           case "project.deleted":
             return Effect.succeed(
@@ -583,9 +584,22 @@ const makeWsRpcLayer = (
                 battleId: event.payload.battleId,
               }),
             );
+          case "queue.lap-reset":
+            return Effect.succeed(
+              Option.some({
+                kind: "queue-lap-reset" as const,
+                sequence: event.sequence,
+              }),
+            );
           default:
             if (event.aggregateKind === "battle") {
               return battleUpsertOrRemove(BattleId.make(event.aggregateId), event.sequence);
+            }
+            // Every other queue event is entry-scoped and files under its
+            // battle, so one refetch answers a whole coalesced burst — and an
+            // add collapsed with a later removal still reads as removed.
+            if (event.aggregateKind === "queue") {
+              return queueEntryUpsertOrRemove(BattleId.make(event.aggregateId), event.sequence);
             }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
@@ -600,7 +614,7 @@ const makeWsRpcLayer = (
       // If both attempts fail, log and drop the stream item; treating an error as
       // a missing row would incorrectly remove a still-active aggregate.
       const retryShellProjectionRead = <A, E>(
-        aggregateKind: "project" | "thread" | "battle",
+        aggregateKind: "project" | "thread" | "battle" | "queue",
         aggregateId: string,
         read: Effect.Effect<A, E>,
       ): Effect.Effect<Option.Option<A>, never, never> =>
@@ -669,6 +683,35 @@ const makeWsRpcLayer = (
                     kind: "battle-upserted" as const,
                     sequence,
                     battle: nextBattle,
+                  }),
+              }),
+            ),
+          ),
+        );
+
+      const queueEntryUpsertOrRemove = (
+        battleId: BattleId,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        retryShellProjectionRead(
+          "queue",
+          battleId,
+          projectionSnapshotQuery.getQueueEntryByBattleId(battleId),
+        ).pipe(
+          Effect.map(
+            Option.flatMap((entry) =>
+              Option.match(entry, {
+                onNone: () =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "queue-entry-removed" as const,
+                    sequence,
+                    battleId,
+                  }),
+                onSome: (nextEntry) =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "queue-entry-upserted" as const,
+                    sequence,
+                    entry: nextEntry,
                   }),
               }),
             ),
