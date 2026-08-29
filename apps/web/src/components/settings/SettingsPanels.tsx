@@ -1884,6 +1884,116 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          {...searchableSetting("battle-queue")}
+          description="Show the battle queue above the sidebar search. Turning it off keeps your working set."
+          resetAction={
+            settings.battleQueueEnabled !== DEFAULT_UNIFIED_SETTINGS.battleQueueEnabled ? (
+              <SettingResetButton
+                label="battle queue"
+                onClick={() =>
+                  updateSettings({
+                    battleQueueEnabled: DEFAULT_UNIFIED_SETTINGS.battleQueueEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.battleQueueEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ battleQueueEnabled: Boolean(checked) })
+              }
+              aria-label="Battle queue"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("battle-queue-project-priority")}
+          description="Count a project&#39;s priority toward the queue order."
+          resetAction={
+            settings.battleQueueProjectPriorityEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.battleQueueProjectPriorityEnabled ? (
+              <SettingResetButton
+                label="project priority"
+                onClick={() =>
+                  updateSettings({
+                    battleQueueProjectPriorityEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.battleQueueProjectPriorityEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.battleQueueProjectPriorityEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ battleQueueProjectPriorityEnabled: Boolean(checked) })
+              }
+              aria-label="Project priority"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("battle-queue-battle-priority")}
+          description="Count a battle&#39;s own priority toward the queue order."
+          resetAction={
+            settings.battleQueueBattlePriorityEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.battleQueueBattlePriorityEnabled ? (
+              <SettingResetButton
+                label="battle priority"
+                onClick={() =>
+                  updateSettings({
+                    battleQueueBattlePriorityEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.battleQueueBattlePriorityEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.battleQueueBattlePriorityEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ battleQueueBattlePriorityEnabled: Boolean(checked) })
+              }
+              aria-label="Battle priority"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("battle-queue-round-robin")}
+          description="Pass a battle over for the rest of the lap instead of meeting it again straight away."
+          resetAction={
+            settings.battleQueueRoundRobinEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.battleQueueRoundRobinEnabled ? (
+              <SettingResetButton
+                label="round-robin skipping"
+                onClick={() =>
+                  updateSettings({
+                    battleQueueRoundRobinEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.battleQueueRoundRobinEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.battleQueueRoundRobinEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ battleQueueRoundRobinEnabled: Boolean(checked) })
+              }
+              aria-label="Round-robin skipping"
+            />
+          }
+        />
+
+        <SettingsRow
           {...searchableSetting("auto-settle-merged-threads")}
           description="Settle a thread when its pull request merges. Closed pull requests still settle automatically."
           resetAction={

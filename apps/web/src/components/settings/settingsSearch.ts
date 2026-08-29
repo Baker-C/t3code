@@ -106,6 +106,26 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
+    id: "battle-queue",
+    title: "Battle queue",
+    to: "/settings/general",
+  },
+  {
+    id: "battle-queue-project-priority",
+    title: "Project priority",
+    to: "/settings/general",
+  },
+  {
+    id: "battle-queue-battle-priority",
+    title: "Battle priority",
+    to: "/settings/general",
+  },
+  {
+    id: "battle-queue-round-robin",
+    title: "Round-robin skipping",
+    to: "/settings/general",
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",
