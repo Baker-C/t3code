@@ -17,9 +17,7 @@ import {
   eligibleQueueRows,
   queueRowKey,
   queueSkipAvailability,
-  queuedQueueRows,
   selectNextQueueRow,
-  visibleQueueRows,
   type QueueRowSource,
 } from "./battleQueue.ts";
 
@@ -165,16 +163,6 @@ describe("battle queue ordering", () => {
     ]);
     // A failure must not override your judgement about what matters.
     expect(rows.map((row) => row.battleId)).toEqual(["high-ok", "low-error"]);
-  });
-
-  it("separates the main list from the queued-actions toggle", () => {
-    const rows = buildQueueRows([
-      ready("ready-row"),
-      makeSource({ id: "dormant", orderKey: 1 }),
-      makeSource({ id: "busy-row", orderKey: 2, outcomes: [null] }),
-    ]);
-    expect(visibleQueueRows(rows).map((row) => row.battleId)).toEqual(["ready-row", "dormant"]);
-    expect(queuedQueueRows(rows).map((row) => row.battleId)).toEqual(["busy-row"]);
   });
 });
 

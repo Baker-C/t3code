@@ -99,5 +99,21 @@ being unexplained.
 
 Backend behaviour is covered by `decider.battleQueue.test.ts`, `projector.battleQueue.test.ts` and
 `BattleQueueReadinessReactor.test.ts`; ordering, cycling and skip availability by
-`battleQueue.test.ts` in client-runtime. The reactor tests wait on receipts and worker drains, never
+`battleQueue.test.ts` in client-runtime; the sidebar section's shape by
+`BattleQueueSection.test.tsx` in web. The reactor tests wait on receipts and worker drains, never
 on sleeps.
+
+## The sidebar section
+
+The queue renders above the sidebar's search row, which is the fixed header, so it never scrolls
+away while you move through projects. That placement is why it carries its own max-height and
+scroll: anything in the fixed region competes with the project list for the same viewport, and an
+expanded queue would otherwise push the list off screen.
+
+Only one battle is featured — `selectNextQueueRow`'s answer — and it doubles as the Next control,
+so there is no button. With nothing ready that selector returns null, and the section falls back to
+the first three rows in queue order rather than rendering an empty slot.
+
+There is no main-list/queued-actions split. A battle with nothing settled reads as `working` and
+sits in the same list, which is why `visibleQueueRows` and `queuedQueueRows` are gone: they existed
+only to feed two sections that are now one.

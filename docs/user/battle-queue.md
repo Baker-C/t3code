@@ -58,9 +58,9 @@ is expected rather than a problem, and nothing special is shown for it.
 Each row is a **battle**, at its position in the order. A battle appears once no matter how many
 actions it has, which is what keeps the list short enough to move through quickly.
 
-A row shows whether it is **ready** — at least one action wants you — or **not started**. A battle
-can be ready and busy at the same time: one action wants you while another is still running. The
-row reads as ready, and you sort out which is which inside the battle.
+A row shows whether it is **ready** — at least one action wants you — **working**, or **not
+started**. A battle can be ready and working at the same time: one action wants you while another
+is still running. The row reads as ready, and you sort out which is which inside the battle.
 
 Ready actions come in three flavours. All of them want you; they want different things:
 
@@ -74,8 +74,13 @@ Ready actions come in three flavours. All of them want you; they want different 
 deliberately, and a failure should not override your judgement about what matters. The mark is
 there so a failed turn cannot go quiet and drop off your radar.
 
-Work that is still in flight is not in the main list. It sits under the collapsed **queued
-actions** toggle underneath, so you always know something is running even when nothing wants you.
+Work that is still in flight is not hidden away: a battle with nothing settled yet reads as
+**working** and sits in the list like any other row, so you always know something is running even
+when nothing wants you.
+
+The queue shows one battle at a time — the one the cycle would hand you next — and tucks the rest
+behind **Show more**. When nothing is ready there is no next battle to feature, so the top of the
+list falls back to the first three rows in order instead of emptying out.
 
 ## Order
 
@@ -93,9 +98,13 @@ project up or down.
 
 ## Cycling
 
-**Next** takes you to the highest-priority battle that has something ready and is not the one you
-are already in. Cycling moves between battles, never between actions — once you are inside a
-battle, all of its actions are there for you to pick from.
+The battle at the top of the queue **is** the next one: it is the highest-priority battle that has
+something ready and is not the one you are already in, so clicking it is the whole cycle. Land in
+it, and the slot refills with the one after. There is no separate Next button, because a button and
+a row that always agree are the same control twice.
+
+Cycling moves between battles, never between actions — once you are inside a battle, all of its
+actions are there for you to pick from.
 
 ### Skipping
 
@@ -117,8 +126,8 @@ Hover it to see which.
 
 Battles leave the queue in three ways:
 
-- **You remove them.** Select rows and clear them, or select all and clear the lot. The same
-  control covers the daily tidy and the sit-down-fresh wipe.
+- **You remove them.** **Remove** appears on a row when you hover or focus it, and **Clear queue**
+  in the queue's own menu wipes the lot for a fresh sit-down.
 - **You declare the battle defeated.** It drops out on its own.
 - **You delete the battle.** It goes with it.
 

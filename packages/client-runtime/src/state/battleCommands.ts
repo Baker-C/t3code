@@ -4,22 +4,32 @@ import { Atom } from "effect/unstable/reactivity";
 import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
 import {
   type AddBattleConditionInput,
+  type AddBattleToQueueInput,
+  type ClearQueueActionInput,
   type CreateBattleInput,
   type DeclareBattleDefeatInput,
   type DeclareBattleFightingInput,
   type DeleteBattleInput,
   type RefreshBattleOrchestratorInput,
+  type RemoveBattlesFromQueueInput,
   type ReopenBattleInput,
+  type SetQueueActionWakeRuleInput,
+  type SkipQueuedBattleInput,
   type StrikeBattleConditionInput,
   type UpdateBattleConditionInput,
   type UpdateBattleMetadataInput,
   addBattleCondition,
+  addBattleToQueue,
+  clearQueueAction,
   createBattle,
   declareBattleDefeat,
   declareBattleFighting,
   deleteBattle,
   refreshBattleOrchestrator,
+  removeBattlesFromQueue,
   reopenBattle,
+  setQueueActionWakeRule,
+  skipQueuedBattle,
   strikeBattleCondition,
   updateBattleCondition,
   updateBattleMetadata,
@@ -28,12 +38,17 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type {
   AddBattleConditionInput,
+  AddBattleToQueueInput,
+  ClearQueueActionInput,
   CreateBattleInput,
   DeclareBattleDefeatInput,
   DeclareBattleFightingInput,
   DeleteBattleInput,
   RefreshBattleOrchestratorInput,
+  RemoveBattlesFromQueueInput,
   ReopenBattleInput,
+  SetQueueActionWakeRuleInput,
+  SkipQueuedBattleInput,
   StrikeBattleConditionInput,
   UpdateBattleConditionInput,
   UpdateBattleMetadataInput,
@@ -106,6 +121,44 @@ export function createBattleEnvironmentAtoms<R, E>(
     delete: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:battle:delete",
       execute: (input: DeleteBattleInput) => deleteBattle(input),
+      scheduler,
+      concurrency,
+    }),
+    /**
+     * Queue commands. Removal takes a list of battles rather than one, so it
+     * serializes on the queue itself instead of a single battle id.
+     */
+    queueAdd: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:battle:queue-add",
+      execute: (input: AddBattleToQueueInput) => addBattleToQueue(input),
+      scheduler,
+      concurrency,
+    }),
+    queueRemove: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:battle:queue-remove",
+      execute: (input: RemoveBattlesFromQueueInput) => removeBattlesFromQueue(input),
+      scheduler,
+      concurrency: {
+        mode: "serial" as const,
+        key: ({ environmentId }: { environmentId: string }) =>
+          JSON.stringify([environmentId, "queue"]),
+      },
+    }),
+    queueSkip: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:battle:queue-skip",
+      execute: (input: SkipQueuedBattleInput) => skipQueuedBattle(input),
+      scheduler,
+      concurrency,
+    }),
+    queueSetActionWakeRule: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:battle:queue-set-action-wake-rule",
+      execute: (input: SetQueueActionWakeRuleInput) => setQueueActionWakeRule(input),
+      scheduler,
+      concurrency,
+    }),
+    queueClearAction: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:battle:queue-clear-action",
+      execute: (input: ClearQueueActionInput) => clearQueueAction(input),
       scheduler,
       concurrency,
     }),

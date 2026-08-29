@@ -30,6 +30,7 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
+import { SidebarQueueSkipButton } from "./SidebarQueueSkipButton";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
@@ -221,6 +222,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Usage"
             onClick={handleUsageClick}
           />
+          <SidebarQueueSkipButton />
         </>
       )}
       <SidebarUpdatePill />

@@ -34,7 +34,7 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { BattleId, EnvironmentId, type ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
@@ -94,6 +94,7 @@ import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../termina
 import { isMacPlatform } from "~/lib/utils";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { readLocalApi } from "../localApi";
+import { queueRowKey } from "@t3tools/client-runtime/state/battle-queue";
 import { getProjectOrderKey, selectProjectGroupingSettings } from "../logicalProject";
 import {
   buildSidebarProjectSnapshots,
@@ -112,6 +113,7 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
 import { battleEnvironment, useBattles, type EnvironmentBattle } from "../state/battles";
+import { useNextQueueRow, useQueueRows } from "../state/battleQueue";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
@@ -184,6 +186,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
+import { BattleQueueSection } from "./sidebar/BattleQueueSection";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
@@ -486,6 +489,9 @@ function SortablePinnedThreadRow(props: {
 // SidebarDraftBlock); memoized so per-keystroke block re-renders skip it
 // entirely.
 const SidebarDraftRow = memo(function SidebarDraftRow(props: {
+  // Inside a project section the header names the project, so the row
+  // drops its project line and leads with the preview instead.
+  showProject: boolean;
   draftId: DraftId;
   session: DraftSessionState;
   composer: ComposerThreadDraftState;
@@ -553,15 +559,23 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
               aria-hidden
               className="size-3 shrink-0 text-amber-600 dark:text-amber-300/80"
             />
-            <ProjectFavicon
-              environmentId={session.environmentId}
-              cwd={props.projectCwd ?? ""}
-              faviconPath={props.projectFaviconPath}
-              className="size-4 shrink-0"
-            />
-            <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
-              {props.projectTitle}
-            </span>
+            {props.showProject ? (
+              <>
+                <ProjectFavicon
+                  environmentId={session.environmentId}
+                  cwd={props.projectCwd ?? ""}
+                  faviconPath={props.projectFaviconPath}
+                  className="size-4 shrink-0"
+                />
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
+                  {props.projectTitle}
+                </span>
+              </>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground/90">
+                {preview}
+              </span>
+            )}
             <span className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-end">
               <Tooltip>
                 <TooltipTrigger
@@ -580,7 +594,9 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
               </Tooltip>
             </span>
           </div>
-          <div className="mt-0.5 truncate text-sm font-medium text-foreground/90">{preview}</div>
+          {props.showProject ? (
+            <div className="mt-0.5 truncate text-sm font-medium text-foreground/90">{preview}</div>
+          ) : null}
         </div>
       </div>
     </li>
@@ -607,6 +623,8 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   // Standalone use (flat list) closes the block with a divider; inside a
   // project section the section's own structure separates it.
   showDivider: boolean;
+  // Flat mode has no section header, so the row keeps its project line.
+  showProject: boolean;
 }) {
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
   const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
@@ -700,6 +718,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
             projectCwd={props.projectCwdByKey.get(projectKey) ?? null}
             projectFaviconPath={props.projectFaviconPathByKey.get(projectKey) ?? null}
             isActive={draftId === props.routeDraftId}
+            showProject={props.showProject}
             onNavigate={props.onNavigateToDraft}
             onDiscard={handleDiscard}
           />
@@ -1449,8 +1468,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               ) : null}
               {/* The label alone is the live region: a role="status"
                   wrapper around the ticking duration would make
-                  screen readers announce every second. */}
-              <span role="status">{topStatus.label}</span>
+                  screen readers announce every second. Working hides the
+                  word and lets the dashed glyph plus the ticking duration
+                  carry it, so the row spends its width on the title. */}
+              <span className={cn(status === "working" && "sr-only")} role="status">
+                {topStatus.label}
+              </span>
               {status === "working" ? (
                 <span aria-hidden>
                   <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
@@ -1851,12 +1874,14 @@ const SidebarProjectSectionHeader = memo(function SidebarProjectSectionHeader(pr
         data-testid="sidebar-project-section-header"
         onClick={handleToggle}
         onKeyDown={handleKeyDown}
-        className="group/project-header flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md pe-2 ps-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        className="group/project-header relative flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md pe-2 ps-[1.125rem] text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ChevronDownIcon
           aria-hidden
           className={cn(
-            "size-3 shrink-0 text-sidebar-muted-foreground/70 transition-transform",
+            // Parked in the row's own padding rather than a column of its
+            // own, so nesting costs no horizontal space.
+            "absolute start-[3px] size-2.5 shrink-0 text-sidebar-muted-foreground/70 transition-transform",
             collapsed && "-rotate-90",
           )}
         />
@@ -2006,18 +2031,18 @@ const SidebarBattleRow = memo(function SidebarBattleRow(props: {
         data-testid="sidebar-battle-row"
         onClick={handleOpen}
         onKeyDown={handleKeyDown}
-        className="group/battle-row flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md pe-2 ps-1.5 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+        className="group/battle-row relative flex h-8 w-full cursor-pointer items-center gap-1.5 rounded-md pe-2 ps-[1.125rem] text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <button
           type="button"
           aria-expanded={!collapsed}
           aria-label={collapsed ? `Expand ${battle.title}` : `Collapse ${battle.title}`}
           onClick={handleToggle}
-          className="flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground/70 outline-none hover:text-sidebar-foreground focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute start-0 flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground/70 outline-none hover:text-sidebar-foreground focus-visible:ring-1 focus-visible:ring-ring"
         >
           <ChevronDownIcon
             aria-hidden
-            className={cn("size-3 transition-transform", collapsed && "-rotate-90")}
+            className={cn("size-2.5 transition-transform", collapsed && "-rotate-90")}
           />
         </button>
         <SwordsIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground/80" />
@@ -2549,6 +2574,74 @@ export default function Sidebar() {
   const reopenBattle = useAtomCommand(battleEnvironment.reopen, "sidebar:battle:reopen");
   // Opening a battle is plain navigation to its page; collapsing its member
   // list stays on the row's chevron.
+  // The battle queue. Ordering, cycling and skip availability are pure
+  // functions in client-runtime, shared with mobile.
+  const battleQueueEnabled = useClientSettings((s) => s.battleQueueEnabled);
+  const projectPriorityEnabled = useClientSettings((s) => s.battleQueueProjectPriorityEnabled);
+  const battlePriorityEnabled = useClientSettings((s) => s.battleQueueBattlePriorityEnabled);
+  const queuePriorityOptions = useMemo(
+    () => ({ battlePriorityEnabled, projectPriorityEnabled }),
+    [battlePriorityEnabled, projectPriorityEnabled],
+  );
+  const queueRows = useQueueRows(queuePriorityOptions);
+  const roundRobinEnabled = useClientSettings((s) => s.battleQueueRoundRobinEnabled);
+  // Cycling never offers the battle you already have open, so the queue needs
+  // to know which one that is. Battle pages carry it in the route params.
+  const routeBattleParams = useParams({
+    strict: false,
+    select: (params) =>
+      typeof params.battleId === "string" && typeof params.environmentId === "string"
+        ? { battleId: params.battleId, environmentId: params.environmentId }
+        : null,
+  });
+  const routeBattleQueueKey =
+    routeBattleParams === null
+      ? null
+      : queueRowKey(
+          EnvironmentId.make(routeBattleParams.environmentId),
+          BattleId.make(routeBattleParams.battleId),
+        );
+  const queueCycleOptions = useMemo(
+    () => ({ currentKey: routeBattleQueueKey, roundRobinEnabled }),
+    [roundRobinEnabled, routeBattleQueueKey],
+  );
+  const nextQueueRow = useNextQueueRow(queueRows, queueCycleOptions);
+  // Row labels only earn their space when more than one machine is connected.
+  const environmentCount = environments.length;
+  const removeFromQueue = useAtomCommand(
+    battleEnvironment.queueRemove,
+    "sidebar:battle:queue-remove",
+  );
+  const handleOpenQueuedBattle = useCallback(
+    (environmentId: EnvironmentId, battleId: BattleId) => {
+      if (isMobile) setOpenMobile(false);
+      void router.navigate({
+        to: "/battles/$environmentId/$battleId",
+        params: { environmentId, battleId },
+      });
+    },
+    [isMobile, router, setOpenMobile],
+  );
+  const handleRemoveQueuedBattle = useCallback(
+    (environmentId: EnvironmentId, battleId: BattleId) => {
+      void removeFromQueue({ environmentId, input: { battleIds: [battleId] } });
+    },
+    [removeFromQueue],
+  );
+  // Clear-all removes each environment's rows in one command per environment,
+  // because a queue never spans one.
+  const handleClearQueue = useCallback(() => {
+    const byEnvironment = new Map<EnvironmentId, BattleId[]>();
+    for (const row of queueRows) {
+      const existing = byEnvironment.get(row.environmentId);
+      if (existing) existing.push(row.battleId);
+      else byEnvironment.set(row.environmentId, [row.battleId]);
+    }
+    for (const [environmentId, battleIds] of byEnvironment) {
+      void removeFromQueue({ environmentId, input: { battleIds } });
+    }
+  }, [queueRows, removeFromQueue]);
+
   const handleOpenBattle = useCallback(
     (battle: EnvironmentBattle) => {
       if (isMobile) setOpenMobile(false);
@@ -4065,6 +4158,21 @@ export default function Sidebar() {
           // Lifted above the stage backdrop, whose fade bleeds below the
           // header and would otherwise paint across the search row's outline.
           <SidebarGroup className="relative z-[1] gap-1 p-[var(--sidebar-content-inset)]">
+            {battleQueueEnabled && queueRows.length > 0 ? (
+              // Above the search row on purpose: the focus list is the thing
+              // you come back to, so it stays put while the project list
+              // scrolls. Capped so an expanded queue cannot eat the sidebar.
+              <div className="max-h-[18.5rem] overflow-y-auto border-b border-sidebar-border pb-1">
+                <BattleQueueSection
+                  rows={queueRows}
+                  next={nextQueueRow}
+                  showEnvironmentLabels={environmentCount > 1}
+                  onOpen={handleOpenQueuedBattle}
+                  onRemove={handleRemoveQueuedBattle}
+                  onClearQueue={handleClearQueue}
+                />
+              </div>
+            ) : null}
             <div className="flex items-center gap-1">
               <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground">
                 <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
@@ -4387,7 +4495,7 @@ export default function Sidebar() {
                         <li key={`battle-body-${battleKey}`} className="list-none">
                           <ul
                             role="list"
-                            className="ms-3 flex flex-col gap-px border-s border-sidebar-border/70 ps-1.5"
+                            className="flex flex-col gap-px rounded-md bg-sidebar-foreground/[0.03] py-0.5"
                           >
                             {memberItems.map((item) =>
                               item.kind === "worktree-label" ? (
@@ -4447,7 +4555,7 @@ export default function Sidebar() {
                             >
                               <ul
                                 role="list"
-                                className="ms-3 flex flex-col gap-px border-s border-sidebar-border/70 ps-1.5"
+                                className="flex flex-col gap-px rounded-md bg-sidebar-foreground/[0.03] py-0.5"
                               >
                                 {renderThreadRow(
                                   routeThread,
@@ -4464,7 +4572,7 @@ export default function Sidebar() {
                           <ul
                             ref={attachListAutoAnimateRef}
                             role="list"
-                            className="ms-3 flex flex-col gap-px border-s border-sidebar-border/70 ps-1.5"
+                            className="flex flex-col gap-px rounded-md bg-sidebar-foreground/[0.03] py-0.5"
                           >
                             <SidebarDraftBlock
                               projectDisplayNameByKey={projectDisplayNameByKey}
@@ -4474,6 +4582,7 @@ export default function Sidebar() {
                               routeDraftId={routeDraftIdForRows}
                               onNavigateToDraft={navigateToDraft}
                               showDivider={false}
+                              showProject={false}
                             />
                             <DndContext
                               sensors={pinnedDndSensors}
@@ -4539,6 +4648,7 @@ export default function Sidebar() {
                         routeDraftId={routeDraftIdForRows}
                         onNavigateToDraft={navigateToDraft}
                         showDivider
+                        showProject
                       />,
                       <DndContext
                         key="pinned-dnd"
@@ -4712,7 +4822,7 @@ export default function Sidebar() {
                           <li key={`defeated-body-${battleKey}`} className="list-none">
                             <ul
                               role="list"
-                              className="ms-3 flex flex-col gap-px border-s border-sidebar-border/70 ps-1.5"
+                              className="flex flex-col gap-px rounded-md bg-sidebar-foreground/[0.03] py-0.5"
                             >
                               {memberItems.map((item) =>
                                 item.kind === "worktree-label" ? (
