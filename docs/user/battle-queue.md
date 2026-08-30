@@ -147,7 +147,7 @@ laptop might connect only itself while your home machine connects both. There is
 
 ## Settings
 
-Under **Settings → Battle queue**:
+Under **Settings → Integrations → Battles**:
 
 | Setting                  | What it does                                             |
 | ------------------------ | -------------------------------------------------------- |

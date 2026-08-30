@@ -125,7 +125,8 @@ from its branch the next time you send it a message.
 
 ## Letting agents update conditions
 
-Under **Settings → Integrations → Battles**, the battle tools switch lets the agents working in a
+Under **Settings → Integrations → Battles**, alongside the battle queue switches described in
+[Battle queue](./battle-queue.md), the battle tools switch lets the agents working in a
 battle read its status and update its victory conditions themselves — an agent that finishes
 scoping can mark its own condition scoped, or add one it discovered along the way. Every change an
 agent makes is attributed to its thread, exactly like an edit you make by hand.
