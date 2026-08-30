@@ -75,6 +75,26 @@ describe("searchSettings", () => {
     expect(searchableSetting("archive")).toEqual({ id: "archive", title: "Archived threads" });
   });
 
+  it("routes battle queue settings to the integrations battles section", () => {
+    for (const id of [
+      "battle-queue",
+      "battle-queue-project-priority",
+      "battle-queue-battle-priority",
+      "battle-queue-round-robin",
+    ]) {
+      const item = SETTINGS_SEARCH_ITEMS.find((entry) => entry.id === id);
+      expect(item).toMatchObject({
+        to: "/settings/integrations",
+        targetId: "battles",
+      });
+    }
+    expect(searchSettings("battle queue")[0]).toMatchObject({
+      id: "battle-queue",
+      to: "/settings/integrations",
+      targetId: "battles",
+    });
+  });
+
   it("routes appearance settings to their current section", () => {
     expect(searchSettings("theme")[0]).toMatchObject({
       id: "theme",
