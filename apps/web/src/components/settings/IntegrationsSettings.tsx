@@ -427,6 +427,138 @@ function BattleToolsSetting() {
   );
 }
 
+function BattleQueueSetting() {
+  const enabled = useClientSettings((settings) => settings.battleQueueEnabled);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("battle-queue")}
+      description="Show the battle queue above the sidebar search. Turning it off keeps your working set."
+      resetAction={
+        enabled !== DEFAULT_UNIFIED_SETTINGS.battleQueueEnabled ? (
+          <SettingResetButton
+            label="battle queue"
+            onClick={() =>
+              updateSettings({
+                battleQueueEnabled: DEFAULT_UNIFIED_SETTINGS.battleQueueEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) => updateSettings({ battleQueueEnabled: Boolean(checked) })}
+          aria-label="Battle queue"
+        />
+      }
+    />
+  );
+}
+
+function BattleQueueProjectPrioritySetting() {
+  const enabled = useClientSettings((settings) => settings.battleQueueProjectPriorityEnabled);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("battle-queue-project-priority")}
+      description="Count a project's priority toward the queue order."
+      resetAction={
+        enabled !== DEFAULT_UNIFIED_SETTINGS.battleQueueProjectPriorityEnabled ? (
+          <SettingResetButton
+            label="project priority"
+            onClick={() =>
+              updateSettings({
+                battleQueueProjectPriorityEnabled:
+                  DEFAULT_UNIFIED_SETTINGS.battleQueueProjectPriorityEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ battleQueueProjectPriorityEnabled: Boolean(checked) })
+          }
+          aria-label="Project priority"
+        />
+      }
+    />
+  );
+}
+
+function BattleQueueBattlePrioritySetting() {
+  const enabled = useClientSettings((settings) => settings.battleQueueBattlePriorityEnabled);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("battle-queue-battle-priority")}
+      description="Count a battle's own priority toward the queue order."
+      resetAction={
+        enabled !== DEFAULT_UNIFIED_SETTINGS.battleQueueBattlePriorityEnabled ? (
+          <SettingResetButton
+            label="battle priority"
+            onClick={() =>
+              updateSettings({
+                battleQueueBattlePriorityEnabled:
+                  DEFAULT_UNIFIED_SETTINGS.battleQueueBattlePriorityEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ battleQueueBattlePriorityEnabled: Boolean(checked) })
+          }
+          aria-label="Battle priority"
+        />
+      }
+    />
+  );
+}
+
+function BattleQueueRoundRobinSetting() {
+  const enabled = useClientSettings((settings) => settings.battleQueueRoundRobinEnabled);
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("battle-queue-round-robin")}
+      description="Pass a battle over for the rest of the lap instead of meeting it again straight away."
+      resetAction={
+        enabled !== DEFAULT_UNIFIED_SETTINGS.battleQueueRoundRobinEnabled ? (
+          <SettingResetButton
+            label="round-robin skipping"
+            onClick={() =>
+              updateSettings({
+                battleQueueRoundRobinEnabled: DEFAULT_UNIFIED_SETTINGS.battleQueueRoundRobinEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ battleQueueRoundRobinEnabled: Boolean(checked) })
+          }
+          aria-label="Round-robin skipping"
+        />
+      }
+    />
+  );
+}
+
 function BrowserAutoShowFloatingPreviewSetting({ disabled }: { readonly disabled: boolean }) {
   const autoShow = useClientSettings((settings) => settings.browserAutoShowFloatingPreview);
   const updateSettings = useUpdatePrimarySettings();
@@ -513,6 +645,10 @@ export function IntegrationsSettingsPanel() {
       </SettingsSection>
       <SettingsSection id="battles" title="Battles">
         <BattleToolsSetting />
+        <BattleQueueSetting />
+        <BattleQueueProjectPrioritySetting />
+        <BattleQueueBattlePrioritySetting />
+        <BattleQueueRoundRobinSetting />
       </SettingsSection>
     </SettingsPageContainer>
   );
